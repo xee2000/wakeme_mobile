@@ -6,6 +6,8 @@ buildscript {
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
+        // 네이버 지도 SDK 버전
+        sdkVersion = "3.23.0"
     }
     repositories {
         google()
