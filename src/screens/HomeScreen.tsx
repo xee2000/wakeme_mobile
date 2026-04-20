@@ -7,6 +7,7 @@ import {
   FlatList,
   Alert,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
@@ -15,6 +16,7 @@ import { RootStackParamList } from '../types';
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
 export default function HomeScreen({ navigation }: Props) {
+  const insets = useSafeAreaInsets();
   const user = useAuthStore(s => s.user);
   const logout = useAuthStore(s => s.logout);
   const { routes, loading, loadRoutes } = useRouteStore();
@@ -35,27 +37,33 @@ export default function HomeScreen({ navigation }: Props) {
       {/* 인삿말 */}
       <View style={styles.header}>
         <Text style={styles.greeting}>
-          안녕하세요, <Text style={styles.nickname}>{user?.nickname}</Text>님 👋
+          안녕하세요,{' '}
+          <Text style={styles.nickname}>{user?.nickname}</Text>님 👋
         </Text>
         <TouchableOpacity onPress={handleLogout}>
           <Text style={styles.logoutText}>로그아웃</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 최근 경로 바로 시작 */}
+      {/* 최근 경로 */}
       {routes.length > 0 ? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>최근 경로</Text>
           <FlatList
             data={routes.slice(0, 3)}
             keyExtractor={item => item.id}
+            contentContainerStyle={{ paddingBottom: 8 }}
             renderItem={({ item }) => (
               <TouchableOpacity
                 style={styles.routeCard}
-                onPress={() => navigation.navigate('RouteActive', { routeId: item.id })}>
+                onPress={() =>
+                  navigation.navigate('RouteActive', { routeId: item.id })
+                }>
                 <View>
                   <Text style={styles.routeName}>{item.name}</Text>
-                  <Text style={styles.routeMeta}>출발 {item.depart_time} · {item.segments.length}구간</Text>
+                  <Text style={styles.routeMeta}>
+                    출발 {item.depart_time} · {item.segments.length}구간
+                  </Text>
                 </View>
                 <Text style={styles.startBtn}>시작 ▶</Text>
               </TouchableOpacity>
@@ -69,8 +77,8 @@ export default function HomeScreen({ navigation }: Props) {
         </View>
       )}
 
-      {/* 하단 버튼 */}
-      <View style={styles.footer}>
+      {/* 하단 버튼 — 홈 인디케이터 침범 방지 */}
+      <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <TouchableOpacity
           style={styles.btnSecondary}
           onPress={() => navigation.navigate('RouteList')}>
@@ -87,7 +95,7 @@ export default function HomeScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F7FA', padding: 20 },
+  container: { flex: 1, backgroundColor: '#F5F7FA', padding: 20, paddingBottom: 0 },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -98,7 +106,12 @@ const styles = StyleSheet.create({
   nickname: { fontWeight: '700', color: '#1A73E8' },
   logoutText: { fontSize: 13, color: '#999' },
   section: { flex: 1 },
-  sectionTitle: { fontSize: 15, fontWeight: '600', color: '#555', marginBottom: 12 },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#555',
+    marginBottom: 12,
+  },
   routeCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -118,7 +131,13 @@ const styles = StyleSheet.create({
   emptyArea: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyText: { fontSize: 16, color: '#555', fontWeight: '600' },
   emptySubText: { fontSize: 13, color: '#999', marginTop: 8 },
-  footer: { flexDirection: 'row', gap: 12 },
+  footer: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingTop: 12,
+    paddingHorizontal: 0,
+    backgroundColor: '#F5F7FA',
+  },
   btnPrimary: {
     flex: 1,
     height: 50,

@@ -8,6 +8,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
@@ -16,6 +17,7 @@ import { RootStackParamList, Route } from '../types';
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteList'>;
 
 export default function RouteListScreen({ navigation }: Props) {
+  const insets = useSafeAreaInsets();
   const user = useAuthStore(s => s.user);
   const { routes, loading, loadRoutes, removeRoute } = useRouteStore();
 
@@ -52,28 +54,40 @@ export default function RouteListScreen({ navigation }: Props) {
         <FlatList
           data={routes}
           keyExtractor={item => item.id}
-          contentContainerStyle={{ padding: 16 }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: insets.bottom + 80, // 하단 버튼 + 홈 인디케이터
+          }}
           renderItem={({ item }) => (
             <View style={styles.card}>
               <TouchableOpacity
                 style={styles.cardMain}
-                onPress={() => navigation.navigate('RouteActive', { routeId: item.id })}>
+                onPress={() =>
+                  navigation.navigate('RouteActive', { routeId: item.id })
+                }>
                 <Text style={styles.routeName}>{item.name}</Text>
                 <Text style={styles.routeMeta}>
                   출발 {item.depart_time} · {item.segments.length}구간
                 </Text>
                 {item.segments.map((seg, i) => (
                   <Text key={i} style={styles.segText}>
-                    {i + 1}. {seg.mode === 'bus' ? `🚌 ${seg.bus_no}번 버스` : `🚇 ${seg.line_name}`}
-                    {' '}({seg.start_stop_name ?? seg.start_station} →{' '}
-                    {seg.end_stop_name ?? seg.end_station})
+                    {i + 1}.{' '}
+                    {seg.mode === 'bus'
+                      ? `🚌 ${seg.bus_no}번 버스`
+                      : `🚇 ${seg.line_name}`}
+                    {' ('}
+                    {seg.start_stop_name ?? seg.start_station} →{' '}
+                    {seg.end_stop_name ?? seg.end_station}
+                    {')'}
                   </Text>
                 ))}
               </TouchableOpacity>
               <View style={styles.cardActions}>
                 <TouchableOpacity
                   style={styles.startBtn}
-                  onPress={() => navigation.navigate('RouteActive', { routeId: item.id })}>
+                  onPress={() =>
+                    navigation.navigate('RouteActive', { routeId: item.id })
+                  }>
                   <Text style={styles.startBtnText}>시작</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -87,8 +101,9 @@ export default function RouteListScreen({ navigation }: Props) {
         />
       )}
 
+      {/* 하단 버튼 — 홈 인디케이터 침범 방지 */}
       <TouchableOpacity
-        style={styles.addBtn}
+        style={[styles.addBtn, { marginBottom: insets.bottom + 12 }]}
         onPress={() => navigation.navigate('RouteRegister', {})}>
         <Text style={styles.addBtnText}>+ 새 경로 등록</Text>
       </TouchableOpacity>
@@ -134,7 +149,7 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { color: '#E53935', fontWeight: '700', fontSize: 14 },
   addBtn: {
-    margin: 16,
+    marginHorizontal: 16,
     height: 50,
     backgroundColor: '#1A73E8',
     borderRadius: 12,

@@ -1,10 +1,3 @@
-/**
- * RouteActiveScreen
- * - 선택한 경로의 마지막 구간 하차 정류장을 목적지로 설정
- * - GPS 위치를 5초마다 폴링하여 지오펜싱 판단
- * - 300m → 준비 알림 / 150m → 하차 알림 → 완료 처리
- */
-
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
@@ -15,6 +8,7 @@ import {
   Platform,
   PermissionsAndroid,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Geolocation from 'react-native-geolocation-service';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
@@ -29,11 +23,11 @@ import {
 import { fetchStopsByRouteName } from '../api/busApi';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteActive'>;
-
 type AlertState = 'idle' | 'prepare_sent' | 'exit_sent' | 'done';
 
 export default function RouteActiveScreen({ route, navigation }: Props) {
   const { routeId } = route.params;
+  const insets = useSafeAreaInsets();
   const routes = useRouteStore(s => s.routes);
   const targetRoute = routes.find(r => r.id === routeId);
 
@@ -45,28 +39,21 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     if (!targetRoute) return;
-
-    // 마지막 구간의 하차 정류장을 목적지로
     const lastSeg: RouteSegment = targetRoute.segments[targetRoute.segments.length - 1];
     const stopName =
       lastSeg.mode === 'bus' ? lastSeg.end_stop_name ?? '' : lastSeg.end_station ?? '';
     setTargetName(stopName);
-
     init(lastSeg, stopName);
 
     return () => {
-      if (watchId.current !== null) {
-        Geolocation.clearWatch(watchId.current);
-      }
+      if (watchId.current !== null) Geolocation.clearWatch(watchId.current);
     };
   }, []);
 
   const init = async (lastSeg: RouteSegment, stopName: string) => {
-    // 알림 채널 / 권한
     await setupNotificationChannel();
     await requestNotificationPermission();
 
-    // Android 위치 권한
     if (Platform.OS === 'android') {
       const granted = await PermissionsAndroid.request(
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
@@ -78,7 +65,6 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       }
     }
 
-    // 버스 정류장 좌표 조회
     if (lastSeg.mode === 'bus' && lastSeg.bus_no) {
       const stops = await fetchStopsByRouteName(lastSeg.bus_no);
       const target = stops.find(
@@ -89,7 +75,6 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       }
     }
 
-    // GPS 워치 시작
     watchId.current = Geolocation.watchPosition(
       pos => handlePosition(pos.coords.latitude, pos.coords.longitude),
       err => console.warn('[GPS]', err),
@@ -99,16 +84,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 
   const handlePosition = (lat: number, lon: number) => {
     if (!targetCoord) return;
-
     const dist = getDistanceMeters({ latitude: lat, longitude: lon }, targetCoord);
     setDistance(Math.round(dist));
 
     setStatus(prev => {
       if (prev === 'done' || prev === 'exit_sent') return prev;
-
-      if (dist <= ALERT_DISTANCE.EXIT && prev !== 'exit_sent') {
+      if (dist <= ALERT_DISTANCE.EXIT) {
         sendExitNotification(targetName);
-        // GPS 워치 중단
         if (watchId.current !== null) Geolocation.clearWatch(watchId.current);
         return 'exit_sent';
       }
@@ -141,7 +123,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: insets.bottom + 12 }]}>
       <View style={styles.card}>
         <Text style={styles.routeName}>{targetRoute.name}</Text>
         <Text style={styles.dest}>목적지: {targetName || '–'}</Text>
@@ -187,7 +169,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 3,
-    marginBottom: 20,
+    marginBottom: 16,
   },
   routeName: { fontSize: 22, fontWeight: '800', color: '#1A73E8', marginBottom: 8 },
   dest: { fontSize: 15, color: '#555', marginBottom: 24 },

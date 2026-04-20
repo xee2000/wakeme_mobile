@@ -6,8 +6,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  Image,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { login, me } from '@react-native-kakao/user';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../api/supabaseClient';
@@ -15,19 +15,18 @@ import { supabase } from '../api/supabaseClient';
 export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const setUser = useAuthStore(s => s.setUser);
+  const insets = useSafeAreaInsets();
 
   const handleKakaoLogin = async () => {
     setLoading(true);
     try {
-      // 1. 카카오 로그인
       await login();
       const profile = await me();
 
-      const userId = String(profile.id);        // id는 number → string 변환
+      const userId = String(profile.id);
       const nickname = profile.nickname ?? '사용자';
       const profileImageUrl = profile.profileImageUrl ?? undefined;
 
-      // 2. Supabase users 테이블 upsert
       const { error } = await supabase.from('users').upsert({
         id: userId,
         nickname,
@@ -36,7 +35,6 @@ export default function LoginScreen() {
       });
       if (error) console.warn('[Login] supabase upsert error:', error.message);
 
-      // 3. 스토어에 저장 → 네비게이션 자동 전환
       setUser({ id: userId, nickname, profileImageUrl });
     } catch (e: any) {
       Alert.alert('로그인 실패', e.message ?? '다시 시도해 주세요.');
@@ -46,7 +44,11 @@ export default function LoginScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
+      ]}>
       <View style={styles.logoArea}>
         <Text style={styles.appName}>WakeMe</Text>
         <Text style={styles.tagline}>졸아도 괜찮아, 내가 깨워줄게</Text>
