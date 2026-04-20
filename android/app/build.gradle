@@ -110,12 +110,27 @@ android {
     }
 }
 
+// GMS 컴포넌트 버전 일관성 강제 (FusedLocationProviderClient IncompatibleClassChangeError 방지)
+configurations.all {
+    resolutionStrategy {
+        force 'com.google.android.gms:play-services-location:21.3.0'
+        force 'com.google.android.gms:play-services-base:18.5.0'
+        force 'com.google.android.gms:play-services-basement:18.5.0'
+        force 'com.google.android.gms:play-services-tasks:18.2.0'
+    }
+}
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
     // 카카오 SDK (MainApplication.kt에서 KakaoSdk.init 호출에 필요)
     implementation("com.kakao.sdk:v2-common:2.20.1")
+
+    // GMS 버전 명시 (Naver Maps / Geolocation 충돌 방지)
+    implementation 'com.google.android.gms:play-services-location:21.3.0'
+    implementation 'com.google.android.gms:play-services-base:18.5.0'
+    implementation 'com.google.android.gms:play-services-tasks:18.2.0'
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
