@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1066866832127",
+    "project_id": "wakeme-1c0a5",
+    "storage_bucket": "wakeme-1c0a5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1066866832127:android:5615bd8b54e2c4b1b252ca",
+        "android_client_info": {
+          "package_name": "com.wakeme_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDIAGaOzXz_u9AOJ562gCgZrblDGlwFV1M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
