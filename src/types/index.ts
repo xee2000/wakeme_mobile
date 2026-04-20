@@ -44,6 +44,7 @@ export interface BusStop {
   nodeName: string;
   gpslati: number;
   gpslong: number;
+  distance?: number; // 근처 정류장 조회 시 서버에서 계산된 거리(m)
 }
 
 // 내비게이션 스택 파라미터

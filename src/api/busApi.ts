@@ -1,11 +1,5 @@
-/**
- * 버스 API — 서버 프록시를 통해 호출
- * 서비스 키는 서버에서 관리 (모바일 노출 없음)
- */
-
 import { BusStop } from '../types';
 
-// TODO: 실제 서버 주소로 변경 (개발: http://10.0.2.2:3000, 배포: https://your-server.com)
 const SERVER_BASE = process.env.SERVER_URL ?? 'http://10.0.2.2:3000';
 
 async function get<T>(path: string): Promise<T> {
@@ -15,18 +9,58 @@ async function get<T>(path: string): Promise<T> {
   return json.data as T;
 }
 
+// 공공 API 응답 매핑
+function mapStop(item: any): BusStop {
+  return {
+    nodeId: item.nodeid ?? item.nodeId ?? '',
+    nodeName: item.nodenm ?? item.nodeName ?? '',
+    gpslati: parseFloat(item.gpslati ?? item.gpsLati ?? '0'),
+    gpslong: parseFloat(item.gpslong ?? item.gpsLong ?? '0'),
+  };
+}
+
+// 서버 정적 데이터 매핑 (stops.json)
+function mapLocalStop(item: any): BusStop & { distance?: number } {
+  return {
+    nodeId: item.id ?? '',
+    nodeName: item.name ?? '',
+    gpslati: item.lat ?? 0,
+    gpslong: item.lng ?? 0,
+    distance: item.distance,
+  };
+}
+
 /** 노선번호로 정류장 목록 조회 */
 export async function fetchStopsByRouteName(routeNo: string): Promise<BusStop[]> {
   try {
     const items = await get<any[]>(`/api/bus/stops?routeNo=${encodeURIComponent(routeNo)}`);
-    return items.map(item => ({
-      nodeId: item.nodeid ?? '',
-      nodeName: item.nodenm ?? '',
-      gpslati: parseFloat(item.gpslati ?? '0'),
-      gpslong: parseFloat(item.gpslong ?? '0'),
-    }));
+    return items.map(mapStop);
   } catch (err) {
     console.error('[busApi] fetchStopsByRouteName error:', err);
+    return [];
+  }
+}
+
+/** 정류장 이름으로 검색 (서버 정적 데이터) */
+export async function searchStops(name: string): Promise<BusStop[]> {
+  try {
+    const res = await fetch(`${SERVER_BASE}/api/stops/search?name=${encodeURIComponent(name)}`);
+    const json = await res.json();
+    return (json.data ?? []).map(mapLocalStop);
+  } catch (err) {
+    console.error('[busApi] searchStops error:', err);
+    return [];
+  }
+}
+
+/** GPS 좌표로 근처 정류장 조회 (서버 정적 데이터 + 거리 계산) */
+export async function fetchNearbyStops(lat: number, lng: number): Promise<BusStop[]> {
+  try {
+    const res = await fetch(`${SERVER_BASE}/api/stops/nearby?lat=${lat}&lng=${lng}`);
+    const json = await res.json();
+    return (json.data ?? []).map(mapLocalStop);
+  } catch (err) {
+    console.error('[busApi] fetchNearbyStops error:', err);
     return [];
   }
 }
