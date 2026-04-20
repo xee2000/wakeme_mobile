@@ -3,6 +3,13 @@ apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 apply plugin: "com.google.gms.google-services"
 
+// local.properties 에서 키 읽기 (project.findProperty 는 local.properties 를 자동 인식하지 않음)
+def localProps = new Properties()
+def localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localPropsFile.withReader('UTF-8') { reader -> localProps.load(reader) }
+}
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -85,8 +92,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
-        // 네이버 지도 클라이언트 ID (local.properties 에서 읽어 Manifest 에 주입)
-        manifestPlaceholders = [NAVER_CLIENT_ID: (project.findProperty("NAVER_CLIENT_ID") ?: "")]
+        // 네이버 지도 클라이언트 ID (local.properties → localProps 로 읽어 Manifest 에 주입)
+        manifestPlaceholders = [NAVER_CLIENT_ID: (localProps.getProperty("NAVER_CLIENT_ID") ?: "")]
     }
     signingConfigs {
         debug {
