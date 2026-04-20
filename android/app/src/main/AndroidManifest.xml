@@ -22,6 +22,11 @@
         android:name="com.kakao.sdk.AppKey"
         android:value="b1a33e107f188d1a51e5302ead784509" />
 
+      <!-- Google Maps API 키 (react-native-maps) -->
+      <meta-data
+        android:name="com.google.android.geo.API_KEY"
+        android:value="${GOOGLE_MAPS_API_KEY}" />
+
       <!-- 카카오 로그인 리다이렉트 Activity -->
       <activity
         android:name="com.kakao.sdk.auth.AuthCodeHandlerActivity"
