@@ -14,9 +14,13 @@ import {
   PermissionsAndroid,
   NativeSyntheticEvent,
   NativeScrollEvent,
-  Dimensions,
 } from 'react-native';
-import MapView, { Marker, Circle, Region } from 'react-native-maps';
+import {
+  NaverMapView,
+  NaverMapMarkerOverlay,
+  NaverMapCircleOverlay,
+  type NaverMapViewRef,
+} from '@mj-studio/react-native-naver-map';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Geolocation from 'react-native-geolocation-service';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -26,8 +30,6 @@ import { RootStackParamList, RouteSegment, TransportMode, BusStop } from '../typ
 import { searchStops, fetchNearbyStops, fetchRoutesByStop } from '../api/busApi';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteRegister'>;
-
-const SCREEN_H = Dimensions.get('window').height;
 
 const EMPTY_SEGMENT: Omit<RouteSegment, 'id' | 'route_id'> = {
   order_index: 0,
@@ -177,15 +179,14 @@ function MapStopSelectModal({
   onSelect: (stop: BusStop, routeNo?: string) => void;
   onClose: () => void;
 }) {
-  const mapRef = useRef<MapView>(null);
+  const mapRef = useRef<NaverMapViewRef>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [region, setRegion] = useState<Region>({
-    latitude: 36.3504, longitude: 127.3845,
-    latitudeDelta: 0.01, longitudeDelta: 0.01,
-  });
   const [nearbyStops, setNearbyStops] = useState<BusStop[]>([]);
   const [loadingLocation, setLoadingLocation] = useState(false);
   const [selectedStop, setSelectedStop] = useState<BusStop | null>(null);
+
+  // 카메라 초기 위치 (대전 시청 근처)
+  const [camera, setCamera] = useState({ latitude: 36.3504, longitude: 127.3845, zoom: 15 });
 
   // 노선 선택 단계
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
@@ -221,12 +222,8 @@ function MapStopSelectModal({
         async pos => {
           const { latitude, longitude } = pos.coords;
           setUserLocation({ lat: latitude, lng: longitude });
-          const newRegion: Region = {
-            latitude, longitude,
-            latitudeDelta: 0.008, longitudeDelta: 0.008,
-          };
-          setRegion(newRegion);
-          mapRef.current?.animateToRegion(newRegion, 800);
+          setCamera({ latitude, longitude, zoom: 16 });
+          mapRef.current?.animateCameraTo({ latitude, longitude, zoom: 16, duration: 800 });
 
           try {
             const stops = await fetchNearbyStops(latitude, longitude);
@@ -248,17 +245,16 @@ function MapStopSelectModal({
   };
 
   // 마커 탭 → 정류장 선택
-  const handleMarkerPress = (stop: BusStop) => {
+  const handleMarkerTap = (stop: BusStop) => {
     setSelectedStop(stop);
     setShowRoutes(false);
     setRoutes([]);
-    // 해당 정류장으로 지도 이동
-    mapRef.current?.animateToRegion({
+    mapRef.current?.animateCameraTo({
       latitude: stop.gpslati,
       longitude: stop.gpslong,
-      latitudeDelta: 0.005,
-      longitudeDelta: 0.005,
-    }, 400);
+      zoom: 17,
+      duration: 400,
+    });
   };
 
   // "등록" 버튼 → 노선 조회
@@ -308,38 +304,45 @@ function MapStopSelectModal({
 
         {!showRoutes ? (
           <>
-            {/* 지도 */}
-            <MapView
+            {/* 네이버 지도 */}
+            <NaverMapView
               ref={mapRef}
               style={ms.map}
-              region={region}
-              onRegionChangeComplete={setRegion}
-              showsUserLocation
-              showsMyLocationButton={false}>
+              camera={camera}
+              isShowLocationButton={false}
+              isShowZoomControls={true}
+              isShowCompass={false}>
 
               {/* 현재 위치 강조 원 */}
               {userLocation && (
-                <Circle
-                  center={{ latitude: userLocation.lat, longitude: userLocation.lng }}
+                <NaverMapCircleOverlay
+                  latitude={userLocation.lat}
+                  longitude={userLocation.lng}
                   radius={400}
-                  fillColor="rgba(26,115,232,0.08)"
-                  strokeColor="rgba(26,115,232,0.3)"
-                  strokeWidth={1}
+                  color="rgba(26,115,232,0.08)"
+                  outlineColor="rgba(26,115,232,0.35)"
+                  outlineWidth={1}
                 />
               )}
 
               {/* 정류장 마커 */}
               {nearbyStops.map(stop => (
-                <Marker
+                <NaverMapMarkerOverlay
                   key={stop.nodeId}
-                  coordinate={{ latitude: stop.gpslati, longitude: stop.gpslong }}
-                  title={stop.nodeName}
-                  description={stop.distance != null ? `${stop.distance}m` : undefined}
-                  onPress={() => handleMarkerPress(stop)}
-                  pinColor={selectedStop?.nodeId === stop.nodeId ? '#E53935' : '#1A73E8'}
+                  latitude={stop.gpslati}
+                  longitude={stop.gpslong}
+                  caption={{ text: stop.nodeName, textSize: 11, color: '#1A73E8' }}
+                  image={
+                    selectedStop?.nodeId === stop.nodeId
+                      ? { symbol: 'red' }
+                      : { symbol: 'blue' }
+                  }
+                  width={32}
+                  height={40}
+                  onTap={() => handleMarkerTap(stop)}
                 />
               ))}
-            </MapView>
+            </NaverMapView>
 
             {/* 선택된 정류장 바텀 카드 */}
             {selectedStop ? (
