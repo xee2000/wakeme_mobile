@@ -112,6 +112,9 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
+    // 카카오 SDK (MainApplication.kt에서 KakaoSdk.init 호출에 필요)
+    implementation("com.kakao.sdk:v2-common:2.20.1")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {
