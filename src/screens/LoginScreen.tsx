@@ -8,7 +8,7 @@ import {
   Alert,
   Image,
 } from 'react-native';
-import { login, getProfile } from '@react-native-kakao/user';
+import { login, me } from '@react-native-kakao/user';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../api/supabaseClient';
 
@@ -21,9 +21,9 @@ export default function LoginScreen() {
     try {
       // 1. 카카오 로그인
       await login();
-      const profile = await getProfile();
+      const profile = await me();
 
-      const userId = String(profile.id);
+      const userId = String(profile.id);        // id는 number → string 변환
       const nickname = profile.nickname ?? '사용자';
       const profileImageUrl = profile.profileImageUrl ?? undefined;
 
