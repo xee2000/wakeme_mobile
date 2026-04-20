@@ -10,8 +10,6 @@ import {
   ActivityIndicator,
   Modal,
   FlatList,
-  Platform,
-  PermissionsAndroid,
   NativeSyntheticEvent,
   NativeScrollEvent,
 } from 'react-native';
@@ -22,7 +20,6 @@ import {
   type NaverMapViewRef,
 } from '@mj-studio/react-native-naver-map';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Geolocation from 'react-native-geolocation-service';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
@@ -180,69 +177,52 @@ function MapStopSelectModal({
   onClose: () => void;
 }) {
   const mapRef = useRef<NaverMapViewRef>(null);
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [nearbyStops, setNearbyStops] = useState<BusStop[]>([]);
-  const [loadingLocation, setLoadingLocation] = useState(false);
+  const [loadingStops, setLoadingStops] = useState(false);
   const [selectedStop, setSelectedStop] = useState<BusStop | null>(null);
-
-  // 카메라 초기 위치 (대전 시청 근처)
-  const [camera, setCamera] = useState({ latitude: 36.3504, longitude: 127.3845, zoom: 15 });
+  const [userLat, setUserLat] = useState<number | null>(null);
+  const [userLng, setUserLng] = useState<number | null>(null);
 
   // 노선 선택 단계
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [routeLoading, setRouteLoading] = useState(false);
   const [showRoutes, setShowRoutes] = useState(false);
 
-  // 모달 열릴 때 내 위치로 이동 + 주변 정류장 로드
+  // 모달 열릴 때 위치 추적 활성화 (Naver Maps SDK 내부 GPS — react-native-geolocation 미사용)
   useEffect(() => {
     if (!visible) {
       setSelectedStop(null);
       setNearbyStops([]);
       setShowRoutes(false);
       setRoutes([]);
+      setUserLat(null);
+      setUserLng(null);
       return;
     }
-    loadCurrentLocation();
+    // 지도가 렌더된 후 Follow 모드 시작
+    const timer = setTimeout(() => {
+      mapRef.current?.setLocationTrackingMode('Follow');
+    }, 400);
+    return () => clearTimeout(timer);
   }, [visible]);
 
-  const loadCurrentLocation = async () => {
-    setLoadingLocation(true);
-    try {
-      if (Platform.OS === 'android') {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        );
-        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          Alert.alert('위치 권한 필요', '정류장을 찾으려면 위치 권한이 필요합니다.');
-          setLoadingLocation(false);
-          return;
-        }
+  // 위치 추적으로 카메라가 이동하면 주변 정류장 조회
+  const handleCameraChanged = useCallback(
+    async (params: { latitude: number; longitude: number; reason: string }) => {
+      if (params.reason !== 'Location') return;
+      const { latitude, longitude } = params;
+      setUserLat(latitude);
+      setUserLng(longitude);
+      setLoadingStops(true);
+      try {
+        const stops = await fetchNearbyStops(latitude, longitude);
+        setNearbyStops(stops);
+      } finally {
+        setLoadingStops(false);
       }
-      Geolocation.getCurrentPosition(
-        async pos => {
-          const { latitude, longitude } = pos.coords;
-          setUserLocation({ lat: latitude, lng: longitude });
-          setCamera({ latitude, longitude, zoom: 16 });
-          mapRef.current?.animateCameraTo({ latitude, longitude, zoom: 16, duration: 800 });
-
-          try {
-            const stops = await fetchNearbyStops(latitude, longitude);
-            setNearbyStops(stops);
-          } finally {
-            setLoadingLocation(false);
-          }
-        },
-        err => {
-          setLoadingLocation(false);
-          Alert.alert('위치 오류', err.message);
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 10000 },
-      );
-    } catch (e: any) {
-      setLoadingLocation(false);
-      Alert.alert('오류', e.message);
-    }
-  };
+    },
+    [],
+  );
 
   // 마커 탭 → 정류장 선택
   const handleMarkerTap = (stop: BusStop) => {
@@ -255,6 +235,11 @@ function MapStopSelectModal({
       zoom: 17,
       duration: 400,
     });
+  };
+
+  // 재탐색 버튼 → 다시 Follow 모드
+  const handleRelocate = () => {
+    mapRef.current?.setLocationTrackingMode('Follow');
   };
 
   // "등록" 버튼 → 노선 조회
@@ -295,32 +280,31 @@ function MapStopSelectModal({
               ? `${selectedStop.nodeName} 노선 선택`
               : title}
           </Text>
-          <TouchableOpacity onPress={loadCurrentLocation} style={ms.relocateBtn} disabled={loadingLocation}>
-            {loadingLocation
-              ? <ActivityIndicator size="small" color="#1A73E8" />
-              : <Text style={ms.relocateText}>📍</Text>}
+          <TouchableOpacity onPress={handleRelocate} style={ms.relocateBtn}>
+            <Text style={ms.relocateText}>📍</Text>
           </TouchableOpacity>
         </View>
 
         {!showRoutes ? (
           <>
-            {/* 네이버 지도 */}
+            {/* 네이버 지도 — isShowLocationButton=true: SDK 내부 GPS 처리 */}
             <NaverMapView
               ref={mapRef}
               style={ms.map}
-              camera={camera}
-              isShowLocationButton={false}
+              initialCamera={{ latitude: 36.3504, longitude: 127.3845, zoom: 14 }}
+              isShowLocationButton={true}
               isShowZoomControls={true}
-              isShowCompass={false}>
+              isShowCompass={false}
+              onCameraChanged={handleCameraChanged}>
 
-              {/* 현재 위치 강조 원 */}
-              {userLocation && (
+              {/* 현재 위치 반경 표시 */}
+              {userLat !== null && userLng !== null && (
                 <NaverMapCircleOverlay
-                  latitude={userLocation.lat}
-                  longitude={userLocation.lng}
+                  latitude={userLat}
+                  longitude={userLng}
                   radius={400}
-                  color="rgba(26,115,232,0.08)"
-                  outlineColor="rgba(26,115,232,0.35)"
+                  color="rgba(26,115,232,0.06)"
+                  outlineColor="rgba(26,115,232,0.3)"
                   outlineWidth={1}
                 />
               )}
@@ -331,7 +315,7 @@ function MapStopSelectModal({
                   key={stop.nodeId}
                   latitude={stop.gpslati}
                   longitude={stop.gpslong}
-                  caption={{ text: stop.nodeName, textSize: 11, color: '#1A73E8' }}
+                  caption={{ text: stop.nodeName, textSize: 11, color: '#222' }}
                   image={
                     selectedStop?.nodeId === stop.nodeId
                       ? { symbol: 'red' }
@@ -360,11 +344,11 @@ function MapStopSelectModal({
             ) : (
               <View style={ms.hintBar}>
                 <Text style={ms.hintText}>
-                  {loadingLocation
-                    ? '내 위치를 불러오는 중...'
+                  {loadingStops
+                    ? '주변 정류장 불러오는 중...'
                     : nearbyStops.length > 0
                     ? `주변 정류장 ${nearbyStops.length}개 • 마커를 눌러 선택`
-                    : '지도를 이동하거나 📍 버튼으로 현재 위치를 찾아보세요'}
+                    : '지도 우측 📍 버튼으로 내 위치를 찾아보세요'}
                 </Text>
               </View>
             )}
