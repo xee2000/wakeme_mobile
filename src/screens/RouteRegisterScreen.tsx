@@ -21,7 +21,7 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, RouteSegment, TransportMode, BusStop } from '../types';
-import { searchStops, fetchNearbyStops } from '../api/busApi';
+import { searchStops, fetchNearbyStops, fetchRoutesByStop } from '../api/busApi';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteRegister'>;
 
@@ -173,8 +173,10 @@ function TimePickerModal({
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 정류장 선택 모달
+// 정류장 선택 모달 (정류장 → 노선 2단계)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+interface RouteInfo { routeId: string; routeNo: string; routeType: string; startStop: string; endStop: string; }
+
 function StopSelectModal({
   visible,
   title,
@@ -183,15 +185,20 @@ function StopSelectModal({
 }: {
   visible: boolean;
   title: string;
-  onSelect: (stop: BusStop) => void;
+  onSelect: (stop: BusStop, routeNo?: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
   const [stops, setStops] = useState<BusStop[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // 2단계: 노선 선택
+  const [selectedStop, setSelectedStop] = useState<BusStop | null>(null);
+  const [routes, setRoutes] = useState<RouteInfo[]>([]);
+  const [routeLoading, setRouteLoading] = useState(false);
+
   useEffect(() => {
-    if (!visible) { setQuery(''); setStops([]); }
+    if (!visible) { setQuery(''); setStops([]); setSelectedStop(null); setRoutes([]); }
   }, [visible]);
 
   const handleSearch = async () => {
@@ -201,51 +208,53 @@ function StopSelectModal({
       const result = await searchStops(query.trim());
       setStops(result);
       if (result.length === 0) Alert.alert('결과 없음', '검색 결과가 없습니다.');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const handleNearby = async () => {
     setLoading(true);
     try {
-      // 위치 권한 요청
       if (Platform.OS === 'android') {
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         );
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
           Alert.alert('위치 권한 필요', '근처 정류장을 찾으려면 위치 권한이 필요합니다.');
-          setLoading(false);
-          return;
+          setLoading(false); return;
         }
       }
-
-      // GPS 위치 가져오기
       Geolocation.getCurrentPosition(
         async pos => {
           try {
-            const result = await fetchNearbyStops(
-              pos.coords.latitude,
-              pos.coords.longitude,
-            );
+            const result = await fetchNearbyStops(pos.coords.latitude, pos.coords.longitude);
             setStops(result);
-            if (result.length === 0)
-              Alert.alert('결과 없음', '주변에 정류장이 없거나 API가 응답하지 않습니다.');
-          } finally {
-            setLoading(false);
-          }
+            if (result.length === 0) Alert.alert('결과 없음', '주변에 정류장이 없습니다.');
+          } finally { setLoading(false); }
         },
-        err => {
-          setLoading(false);
-          Alert.alert('위치 오류', err.message);
-        },
+        err => { setLoading(false); Alert.alert('위치 오류', err.message); },
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 },
       );
-    } catch (e: any) {
-      setLoading(false);
-      Alert.alert('오류', e.message);
-    }
+    } catch (e: any) { setLoading(false); Alert.alert('오류', e.message); }
+  };
+
+  // 정류장 선택 → 노선 목록 조회
+  const handleStopPress = async (stop: BusStop) => {
+    setSelectedStop(stop);
+    setRouteLoading(true);
+    try {
+      const result = await fetchRoutesByStop(stop.nodeId);
+      setRoutes(result);
+    } finally { setRouteLoading(false); }
+  };
+
+  // 노선 선택 완료
+  const handleRoutePress = (route: RouteInfo) => {
+    if (selectedStop) { onSelect(selectedStop, route.routeNo); onClose(); }
+  };
+
+  // 정류장만 선택 (노선 정보 없이)
+  const handleSelectStopOnly = () => {
+    if (selectedStop) { onSelect(selectedStop); onClose(); }
   };
 
   return (
@@ -253,66 +262,125 @@ function StopSelectModal({
       <View style={ss.container}>
         {/* 헤더 */}
         <View style={ss.header}>
-          <TouchableOpacity onPress={onClose} style={ss.closeBtn}>
-            <Text style={ss.closeText}>✕</Text>
+          <TouchableOpacity
+            onPress={selectedStop ? () => setSelectedStop(null) : onClose}
+            style={ss.closeBtn}>
+            <Text style={ss.closeText}>{selectedStop ? '←' : '✕'}</Text>
           </TouchableOpacity>
-          <Text style={ss.headerTitle}>{title}</Text>
+          <Text style={ss.headerTitle}>
+            {selectedStop ? `${selectedStop.nodeName} 노선` : title}
+          </Text>
           <View style={{ width: 36 }} />
         </View>
 
-        {/* 내 주변 정류장 버튼 */}
-        <TouchableOpacity style={ss.nearbyBtn} onPress={handleNearby} disabled={loading}>
-          <Text style={ss.nearbyIcon}>📍</Text>
-          <Text style={ss.nearbyText}>내 주변 정류장 찾기</Text>
-        </TouchableOpacity>
+        {/* ── STEP 1: 정류장 목록 ── */}
+        {!selectedStop ? (
+          <>
+            <TouchableOpacity style={ss.nearbyBtn} onPress={handleNearby} disabled={loading}>
+              <Text style={ss.nearbyIcon}>📍</Text>
+              <Text style={ss.nearbyText}>내 주변 정류장 찾기</Text>
+            </TouchableOpacity>
 
-        {/* 이름 검색 */}
-        <View style={ss.searchRow}>
-          <TextInput
-            style={ss.searchInput}
-            placeholder="정류장 이름으로 검색"
-            value={query}
-            onChangeText={setQuery}
-            onSubmitEditing={handleSearch}
-            returnKeyType="search"
-          />
-          <TouchableOpacity style={ss.searchBtn} onPress={handleSearch}>
-            <Text style={ss.searchBtnText}>검색</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* 결과 목록 */}
-        {loading ? (
-          <View style={ss.center}>
-            <ActivityIndicator size="large" color="#1A73E8" />
-            <Text style={ss.loadingText}>검색 중...</Text>
-          </View>
-        ) : (
-          <FlatList
-            data={stops}
-            keyExtractor={item => item.nodeId}
-            contentContainerStyle={{ padding: 16 }}
-            ListEmptyComponent={
-              <View style={ss.center}>
-                <Text style={ss.emptyText}>
-                  📍 버튼으로 주변 정류장을 찾거나{'\n'}이름으로 검색해보세요
-                </Text>
-              </View>
-            }
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={ss.stopItem}
-                onPress={() => { onSelect(item); onClose(); }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={ss.stopName}>{item.nodeName}</Text>
-                  <Text style={ss.stopId}>
-                    {item.distance != null ? `📍 ${item.distance}m` : `코드: ${item.nodeId}`}
-                  </Text>
-                </View>
-                <Text style={ss.selectArrow}>›</Text>
+            <View style={ss.searchRow}>
+              <TextInput
+                style={ss.searchInput}
+                placeholder="정류장 이름으로 검색"
+                value={query}
+                onChangeText={setQuery}
+                onSubmitEditing={handleSearch}
+                returnKeyType="search"
+              />
+              <TouchableOpacity style={ss.searchBtn} onPress={handleSearch}>
+                <Text style={ss.searchBtnText}>검색</Text>
               </TouchableOpacity>
+            </View>
+
+            {loading ? (
+              <View style={ss.center}>
+                <ActivityIndicator size="large" color="#1A73E8" />
+                <Text style={ss.loadingText}>검색 중...</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={stops}
+                keyExtractor={item => item.nodeId}
+                contentContainerStyle={{ padding: 16 }}
+                ListEmptyComponent={
+                  <View style={ss.center}>
+                    <Text style={ss.emptyText}>
+                      📍 버튼으로 주변 정류장을 찾거나{'\n'}이름으로 검색해보세요
+                    </Text>
+                  </View>
+                }
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={ss.stopItem} onPress={() => handleStopPress(item)}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={ss.stopName}>{item.nodeName}</Text>
+                      <Text style={ss.stopId}>
+                        {item.distance != null ? `📍 ${item.distance}m` : `코드: ${item.nodeId}`}
+                      </Text>
+                    </View>
+                    <Text style={ss.selectArrow}>›</Text>
+                  </TouchableOpacity>
+                )}
+              />
             )}
-          />
+          </>
+        ) : (
+          /* ── STEP 2: 노선 목록 ── */
+          <>
+            <View style={ss.stopInfoBar}>
+              <Text style={ss.stopInfoText}>🚏 {selectedStop.nodeName}</Text>
+              <TouchableOpacity onPress={handleSelectStopOnly}>
+                <Text style={ss.stopOnlyText}>노선 없이 선택</Text>
+              </TouchableOpacity>
+            </View>
+
+            {routeLoading ? (
+              <View style={ss.center}>
+                <ActivityIndicator size="large" color="#1A73E8" />
+                <Text style={ss.loadingText}>노선 조회 중...</Text>
+              </View>
+            ) : routes.length === 0 ? (
+              <View style={ss.center}>
+                <Text style={ss.emptyText}>이 정류장의 노선 정보를{'\n'}불러올 수 없습니다.</Text>
+                <TouchableOpacity style={ss.fallbackBtn} onPress={handleSelectStopOnly}>
+                  <Text style={ss.fallbackBtnText}>정류장만 선택하기</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <FlatList
+                data={routes}
+                keyExtractor={(item, i) => `${item.routeId}-${i}`}
+                contentContainerStyle={{ padding: 16 }}
+                ListHeaderComponent={
+                  <Text style={ss.routeCount}>
+                    총 {routes.length}개 노선 경유
+                  </Text>
+                }
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={ss.routeItem} onPress={() => handleRoutePress(item)}>
+                    <View style={ss.routeNoBox}>
+                      <Text style={ss.routeNo}>{item.routeNo}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      {item.startStop ? (
+                        <Text style={ss.routeDir}>
+                          {item.startStop} → {item.endStop}
+                        </Text>
+                      ) : (
+                        <Text style={ss.routeDir}>노선 선택</Text>
+                      )}
+                      {item.routeType ? (
+                        <Text style={ss.routeType}>{item.routeType}</Text>
+                      ) : null}
+                    </View>
+                    <Text style={ss.selectArrow}>›</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </>
         )}
       </View>
     </Modal>
@@ -371,12 +439,20 @@ export default function RouteRegisterScreen({ navigation }: Props) {
     setStopModal({ visible: true, segIndex, field });
   };
 
-  const handleStopSelect = (stop: BusStop) => {
+  const handleStopSelect = (stop: BusStop, routeNo?: string) => {
     const { segIndex, field } = stopModal;
     if (field === 'start') {
-      updateSegment(segIndex, { start_stop_name: stop.nodeName, start_stop_id: stop.nodeId });
+      updateSegment(segIndex, {
+        start_stop_name: stop.nodeName,
+        start_stop_id: stop.nodeId,
+        ...(routeNo ? { bus_no: routeNo } : {}),
+      });
     } else {
-      updateSegment(segIndex, { end_stop_name: stop.nodeName, end_stop_id: stop.nodeId });
+      updateSegment(segIndex, {
+        end_stop_name: stop.nodeName,
+        end_stop_id: stop.nodeId,
+        ...(routeNo ? { bus_no: routeNo } : {}),
+      });
     }
   };
 
@@ -645,4 +721,28 @@ const ss = StyleSheet.create({
   stopName: { fontSize: 15, fontWeight: '600', color: '#222' },
   stopId: { fontSize: 12, color: '#aaa', marginTop: 2 },
   selectArrow: { fontSize: 24, color: '#1A73E8', fontWeight: '700' },
+  stopInfoBar: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: '#E8F0FE', paddingHorizontal: 16, paddingVertical: 12,
+  },
+  stopInfoText: { fontSize: 14, fontWeight: '700', color: '#1A73E8', flex: 1 },
+  stopOnlyText: { fontSize: 12, color: '#888', textDecorationLine: 'underline' },
+  routeCount: { fontSize: 13, color: '#888', marginBottom: 10 },
+  routeItem: {
+    backgroundColor: '#fff', borderRadius: 10, padding: 14, marginBottom: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4, elevation: 2,
+  },
+  routeNoBox: {
+    minWidth: 56, paddingHorizontal: 10, height: 40, backgroundColor: '#1A73E8',
+    borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+  },
+  routeNo: { fontSize: 16, fontWeight: '900', color: '#fff' },
+  routeDir: { fontSize: 13, color: '#444', fontWeight: '500' },
+  routeType: { fontSize: 11, color: '#aaa', marginTop: 2 },
+  fallbackBtn: {
+    marginTop: 16, paddingHorizontal: 24, paddingVertical: 12,
+    backgroundColor: '#1A73E8', borderRadius: 10,
+  },
+  fallbackBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });
