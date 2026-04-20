@@ -9,7 +9,6 @@ import {
   Alert,
   ActivityIndicator,
   Modal,
-  FlatList,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -27,10 +26,7 @@ const EMPTY_SEGMENT: Omit<RouteSegment, 'id' | 'route_id'> = {
   end_stop_name: '',
 };
 
-const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
-const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
-
-// ── 시간 다이얼 피커 ──────────────────────────────────────────────
+// ── 시간 피커 모달 (+/- 버튼) ────────────────────────────────────
 function TimePickerModal({
   visible,
   hour,
@@ -44,10 +40,13 @@ function TimePickerModal({
   onConfirm: (h: string, m: string) => void;
   onClose: () => void;
 }) {
-  const [selHour, setSelHour] = useState(hour);
-  const [selMin, setSelMin] = useState(minute);
+  const [h, setH] = useState(Number(hour));
+  const [m, setM] = useState(Number(minute));
 
-  const ITEM_H = 48;
+  const pad = (n: number) => String(n).padStart(2, '0');
+
+  const changeH = (delta: number) => setH(prev => (prev + delta + 24) % 24);
+  const changeM = (delta: number) => setM(prev => (prev + delta + 60) % 60);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -55,67 +54,39 @@ function TimePickerModal({
         <TouchableOpacity activeOpacity={1} style={tp.sheet}>
           <Text style={tp.title}>출발 시간 선택</Text>
 
-          <View style={tp.dialRow}>
+          <View style={tp.row}>
             {/* 시 */}
-            <View style={tp.dialWrap}>
-              <Text style={tp.dialLabel}>시</Text>
-              <View style={tp.dialBox}>
-                <View style={tp.selector} pointerEvents="none" />
-                <FlatList
-                  data={HOURS}
-                  keyExtractor={h => h}
-                  showsVerticalScrollIndicator={false}
-                  snapToInterval={ITEM_H}
-                  decelerationRate="fast"
-                  initialScrollIndex={Number(selHour)}
-                  getItemLayout={(_, i) => ({ length: ITEM_H, offset: ITEM_H * i, index: i })}
-                  onMomentumScrollEnd={e => {
-                    const idx = Math.round(e.nativeEvent.contentOffset.y / ITEM_H);
-                    setSelHour(HOURS[Math.max(0, Math.min(23, idx))]);
-                  }}
-                  contentContainerStyle={{ paddingVertical: ITEM_H * 2 }}
-                  renderItem={({ item }) => (
-                    <View style={[tp.dialItem, { height: ITEM_H }]}>
-                      <Text style={[tp.dialItemText, item === selHour && tp.dialItemActive]}>
-                        {item}
-                      </Text>
-                    </View>
-                  )}
-                />
+            <View style={tp.col}>
+              <Text style={tp.colLabel}>시</Text>
+              <TouchableOpacity style={tp.arrowBtn} onPress={() => changeH(1)}>
+                <Text style={tp.arrow}>▲</Text>
+              </TouchableOpacity>
+              <View style={tp.valueBox}>
+                <Text style={tp.valueText}>{pad(h)}</Text>
               </View>
+              <TouchableOpacity style={tp.arrowBtn} onPress={() => changeH(-1)}>
+                <Text style={tp.arrow}>▼</Text>
+              </TouchableOpacity>
             </View>
 
             <Text style={tp.colon}>:</Text>
 
             {/* 분 */}
-            <View style={tp.dialWrap}>
-              <Text style={tp.dialLabel}>분</Text>
-              <View style={tp.dialBox}>
-                <View style={tp.selector} pointerEvents="none" />
-                <FlatList
-                  data={MINUTES}
-                  keyExtractor={m => m}
-                  showsVerticalScrollIndicator={false}
-                  snapToInterval={ITEM_H}
-                  decelerationRate="fast"
-                  initialScrollIndex={Number(selMin)}
-                  getItemLayout={(_, i) => ({ length: ITEM_H, offset: ITEM_H * i, index: i })}
-                  onMomentumScrollEnd={e => {
-                    const idx = Math.round(e.nativeEvent.contentOffset.y / ITEM_H);
-                    setSelMin(MINUTES[Math.max(0, Math.min(59, idx))]);
-                  }}
-                  contentContainerStyle={{ paddingVertical: ITEM_H * 2 }}
-                  renderItem={({ item }) => (
-                    <View style={[tp.dialItem, { height: ITEM_H }]}>
-                      <Text style={[tp.dialItemText, item === selMin && tp.dialItemActive]}>
-                        {item}
-                      </Text>
-                    </View>
-                  )}
-                />
+            <View style={tp.col}>
+              <Text style={tp.colLabel}>분</Text>
+              <TouchableOpacity style={tp.arrowBtn} onPress={() => changeM(5)}>
+                <Text style={tp.arrow}>▲</Text>
+              </TouchableOpacity>
+              <View style={tp.valueBox}>
+                <Text style={tp.valueText}>{pad(m)}</Text>
               </View>
+              <TouchableOpacity style={tp.arrowBtn} onPress={() => changeM(-5)}>
+                <Text style={tp.arrow}>▼</Text>
+              </TouchableOpacity>
             </View>
           </View>
+
+          <Text style={tp.hint}>▲▼ 5분 단위 조정 · 자정 넘으면 자동 순환</Text>
 
           <View style={tp.btnRow}>
             <TouchableOpacity style={tp.cancelBtn} onPress={onClose}>
@@ -123,7 +94,7 @@ function TimePickerModal({
             </TouchableOpacity>
             <TouchableOpacity
               style={tp.confirmBtn}
-              onPress={() => { onConfirm(selHour, selMin); onClose(); }}>
+              onPress={() => { onConfirm(pad(h), pad(m)); onClose(); }}>
               <Text style={tp.confirmText}>확인</Text>
             </TouchableOpacity>
           </View>
@@ -437,50 +408,56 @@ const tp = StyleSheet.create({
     borderTopRightRadius: 20,
     paddingHorizontal: 24,
     paddingTop: 20,
-    paddingBottom: 32,
+    paddingBottom: 36,
   },
   title: {
     fontSize: 17,
     fontWeight: '700',
     color: '#222',
     textAlign: 'center',
-    marginBottom: 20,
+    marginBottom: 24,
   },
-  dialRow: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 240,
-    marginBottom: 24,
+    marginBottom: 8,
   },
-  dialWrap: { alignItems: 'center' },
-  dialLabel: { fontSize: 13, color: '#888', marginBottom: 4 },
-  dialBox: {
+  col: { alignItems: 'center', width: 100 },
+  colLabel: { fontSize: 13, color: '#888', marginBottom: 8 },
+  arrowBtn: {
+    width: 64,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F5F7FA',
+    borderRadius: 10,
+  },
+  arrow: { fontSize: 18, color: '#1A73E8', fontWeight: '700' },
+  valueBox: {
     width: 80,
-    height: 192,
-    overflow: 'hidden',
-    position: 'relative',
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#1A73E8',
+    borderRadius: 12,
+    marginVertical: 8,
+    backgroundColor: '#EEF4FF',
   },
-  selector: {
-    position: 'absolute',
-    top: '50%',
-    marginTop: -24,
-    left: 0,
-    right: 0,
-    height: 48,
-    backgroundColor: '#E8F0FE',
-    borderRadius: 8,
-    zIndex: 1,
-  },
-  dialItem: { alignItems: 'center', justifyContent: 'center' },
-  dialItemText: { fontSize: 22, color: '#bbb', fontWeight: '500' },
-  dialItemActive: { color: '#1A73E8', fontWeight: '800', fontSize: 26 },
+  valueText: { fontSize: 36, fontWeight: '900', color: '#1A73E8' },
   colon: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontSize: 32,
+    fontWeight: '800',
     color: '#333',
-    marginHorizontal: 16,
-    marginTop: 20,
+    marginHorizontal: 12,
+    marginTop: 32,
+  },
+  hint: {
+    fontSize: 12,
+    color: '#aaa',
+    textAlign: 'center',
+    marginBottom: 20,
   },
   btnRow: { flexDirection: 'row', gap: 12 },
   cancelBtn: {
