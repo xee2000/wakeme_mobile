@@ -1,32 +1,25 @@
 /**
- * 대전광역시 버스 공공 API
- * base: https://apis.data.go.kr/6300000/busposinfo
+ * 버스 API — 서버 프록시를 통해 호출
+ * 서비스 키는 서버에서 관리 (모바일 노출 없음)
  */
 
 import { BusStop } from '../types';
 
-const SERVICE_KEY =
-  'ZF3DPM7I7+cM+lDf8i6VQZHdB0L9tkmHSPYehTBJm2MPgr+6Gu6z1PywaVDYS31BN0GFhkdF1cGVJjY2Rxy0NA==';
-const BASE_URL = 'https://apis.data.go.kr/6300000/busposinfo';
+// TODO: 실제 서버 주소로 변경 (개발: http://10.0.2.2:3000, 배포: https://your-server.com)
+const SERVER_BASE = process.env.SERVER_URL ?? 'http://10.0.2.2:3000';
 
-function buildUrl(endpoint: string, params: Record<string, string>): string {
-  const searchParams = new URLSearchParams({
-    serviceKey: SERVICE_KEY,
-    resultType: 'json',
-    ...params,
-  });
-  return `${BASE_URL}/${endpoint}?${searchParams.toString()}`;
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${SERVER_BASE}${path}`);
+  if (!res.ok) throw new Error(`API 오류: ${res.status}`);
+  const json = await res.json();
+  return json.data as T;
 }
 
-/** 노선명으로 정류장 목록 조회 */
-export async function fetchStopsByRouteName(routeName: string): Promise<BusStop[]> {
+/** 노선번호로 정류장 목록 조회 */
+export async function fetchStopsByRouteName(routeNo: string): Promise<BusStop[]> {
   try {
-    const url = buildUrl('getBusStopList', { routeNo: routeName });
-    const res = await fetch(url);
-    const json = await res.json();
-    const items = json?.response?.body?.items?.item ?? [];
-    const list = Array.isArray(items) ? items : [items];
-    return list.map((item: any) => ({
+    const items = await get<any[]>(`/api/bus/stops?routeNo=${encodeURIComponent(routeNo)}`);
+    return items.map(item => ({
       nodeId: item.nodeid ?? '',
       nodeName: item.nodenm ?? '',
       gpslati: parseFloat(item.gpslati ?? '0'),
@@ -41,11 +34,7 @@ export async function fetchStopsByRouteName(routeName: string): Promise<BusStop[
 /** 정류장 ID로 도착 예정 버스 조회 */
 export async function fetchArrivingBuses(nodeId: string): Promise<any[]> {
   try {
-    const url = buildUrl('getSttnAcctoArvlPrearngeInfoList', { nodeId });
-    const res = await fetch(url);
-    const json = await res.json();
-    const items = json?.response?.body?.items?.item ?? [];
-    return Array.isArray(items) ? items : [items];
+    return await get<any[]>(`/api/bus/arriving?nodeId=${encodeURIComponent(nodeId)}`);
   } catch (err) {
     console.error('[busApi] fetchArrivingBuses error:', err);
     return [];
@@ -55,11 +44,7 @@ export async function fetchArrivingBuses(nodeId: string): Promise<any[]> {
 /** 노선 ID로 버스 현재 위치 조회 */
 export async function fetchBusPositions(routeId: string): Promise<any[]> {
   try {
-    const url = buildUrl('getBusPosByRtidList', { routeId });
-    const res = await fetch(url);
-    const json = await res.json();
-    const items = json?.response?.body?.items?.item ?? [];
-    return Array.isArray(items) ? items : [items];
+    return await get<any[]>(`/api/bus/positions?routeId=${encodeURIComponent(routeId)}`);
   } catch (err) {
     console.error('[busApi] fetchBusPositions error:', err);
     return [];
