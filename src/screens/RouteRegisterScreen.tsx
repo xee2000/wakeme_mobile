@@ -26,7 +26,7 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, RouteSegment, TransportMode, BusStop } from '../types';
-import { searchStops, fetchNearbyStops, fetchRoutesByStop } from '../api/busApi';
+import { searchStops, fetchNearbyStops, fetchRoutesByStop, fetchSubwayStations, SubwayStation } from '../api/busApi';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteRegister'>;
 
@@ -170,11 +170,14 @@ interface RouteInfo { routeId: string; routeNo: string; routeType: string; start
 function MapStopSelectModal({
   visible,
   title,
+  skipRouteSelection,
   onSelect,
   onClose,
 }: {
   visible: boolean;
   title: string;
+  /** 하차 정류장처럼 노선 선택이 필요 없을 때 true */
+  skipRouteSelection?: boolean;
   onSelect: (stop: BusStop, routeNo?: string) => void;
   onClose: () => void;
 }) {
@@ -267,9 +270,14 @@ function MapStopSelectModal({
     mapRef.current?.setLocationTrackingMode('Follow');
   };
 
-  // "등록" 버튼 → 노선 조회
+  // "등록" 버튼 → 노선 조회 (하차인 경우 바로 완료)
   const handleRegister = async () => {
     if (!selectedStop) return;
+    if (skipRouteSelection) {
+      onSelect(selectedStop);
+      onClose();
+      return;
+    }
     setRouteLoading(true);
     setShowRoutes(true);
     try {
@@ -415,7 +423,9 @@ function MapStopSelectModal({
                   </Text>
                 </View>
                 <TouchableOpacity style={ms.registerBtn} onPress={handleRegister}>
-                  <Text style={ms.registerBtnText}>등록</Text>
+                  <Text style={ms.registerBtnText}>
+                    {skipRouteSelection ? '선택' : '등록'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -560,6 +570,109 @@ function SubwayLinePicker({ value, onChange }: { value: string; onChange: (v: st
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 지하철 역 선택 모달
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function SubwayStationPickerModal({
+  visible,
+  title,
+  line,
+  onSelect,
+  onClose,
+}: {
+  visible: boolean;
+  title: string;
+  line: string;
+  onSelect: (stationName: string) => void;
+  onClose: () => void;
+}) {
+  const [stations, setStations] = useState<SubwayStation[]>([]);
+  const [filtered, setFiltered] = useState<SubwayStation[]>([]);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!visible) { setQuery(''); return; }
+    setLoading(true);
+    fetchSubwayStations(line || undefined)
+      .then(data => { setStations(data); setFiltered(data); })
+      .finally(() => setLoading(false));
+  }, [visible, line]);
+
+  useEffect(() => {
+    if (!query.trim()) { setFiltered(stations); return; }
+    setFiltered(stations.filter(s =>
+      s.name.includes(query) || s.fullName.includes(query),
+    ));
+  }, [query, stations]);
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={ss.overlay}>
+        <View style={ss.sheet}>
+          {/* 핸들 */}
+          <View style={ss.handle} />
+
+          {/* 헤더 */}
+          <View style={ss.header}>
+            <TouchableOpacity onPress={onClose} style={ss.closeBtn}>
+              <Text style={ss.closeText}>✕</Text>
+            </TouchableOpacity>
+            <Text style={ss.title}>{title}</Text>
+            <View style={{ width: 36 }} />
+          </View>
+
+          {/* 검색창 */}
+          <View style={ss.searchWrap}>
+            <TextInput
+              style={ss.searchInput}
+              placeholder="역 이름으로 검색..."
+              value={query}
+              onChangeText={setQuery}
+              clearButtonMode="while-editing"
+            />
+          </View>
+
+          {/* 역 목록 */}
+          {loading ? (
+            <View style={ss.center}>
+              <ActivityIndicator size="large" color="#F5A200" />
+            </View>
+          ) : (
+            <FlatList
+              data={filtered}
+              keyExtractor={item => `${item.line}-${item.seq}`}
+              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
+              keyboardShouldPersistTaps="handled"
+              ListEmptyComponent={
+                <View style={ss.center}>
+                  <Text style={ss.emptyText}>검색 결과가 없습니다.</Text>
+                </View>
+              }
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={ss.stationItem}
+                  onPress={() => { onSelect(item.name); onClose(); }}>
+                  <View style={[ss.lineTag, { backgroundColor: item.color }]}>
+                    <Text style={ss.lineTagText}>{item.line}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={ss.stationName}>{item.name}</Text>
+                    {item.fullName !== item.name && (
+                      <Text style={ss.stationFullName}>{item.fullName}</Text>
+                    )}
+                  </View>
+                  <Text style={ss.arrow}>›</Text>
+                </TouchableOpacity>
+              )}
+            />
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 메인 스크린
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export default function RouteRegisterScreen({ navigation }: Props) {
@@ -582,6 +695,24 @@ export default function RouteRegisterScreen({ navigation }: Props) {
     segIndex: number;
     field: 'start' | 'end';
   }>({ visible: false, segIndex: 0, field: 'start' });
+
+  const [subwayPicker, setSubwayPicker] = useState<{
+    visible: boolean;
+    segIndex: number;
+    field: 'start' | 'end';
+  }>({ visible: false, segIndex: 0, field: 'start' });
+
+  const openSubwayPicker = (segIndex: number, field: 'start' | 'end') =>
+    setSubwayPicker({ visible: true, segIndex, field });
+
+  const handleSubwayStationSelect = (stationName: string) => {
+    const { segIndex, field } = subwayPicker;
+    if (field === 'start') {
+      updateSegment(segIndex, { start_station: stationName });
+    } else {
+      updateSegment(segIndex, { end_station: stationName });
+    }
+  };
 
   const updateSegment = (
     index: number,
@@ -753,10 +884,26 @@ export default function RouteRegisterScreen({ navigation }: Props) {
                   value={seg.line_name ?? ''}
                   onChange={v => updateSegment(index, { line_name: v })}
                 />
-                <TextInput style={styles.input} placeholder="승차 역 이름"
-                  value={seg.start_station} onChangeText={v => updateSegment(index, { start_station: v })} />
-                <TextInput style={styles.input} placeholder="하차 역 이름"
-                  value={seg.end_station} onChangeText={v => updateSegment(index, { end_station: v })} />
+
+                <Text style={styles.fieldLabel}>승차 역</Text>
+                <TouchableOpacity
+                  style={styles.stopPicker}
+                  onPress={() => openSubwayPicker(index, 'start')}>
+                  <Text style={seg.start_station ? styles.stopSelected : styles.stopPlaceholder}>
+                    {seg.start_station || '🚇 승차 역 선택'}
+                  </Text>
+                  <Text style={styles.stopArrow}>›</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.fieldLabel}>하차 역</Text>
+                <TouchableOpacity
+                  style={[styles.stopPicker, { borderColor: '#E53935' }]}
+                  onPress={() => openSubwayPicker(index, 'end')}>
+                  <Text style={seg.end_station ? styles.stopSelected : styles.stopPlaceholder}>
+                    {seg.end_station || '🚇 하차 역 선택'}
+                  </Text>
+                  <Text style={styles.stopArrow}>›</Text>
+                </TouchableOpacity>
               </>
             )}
           </View>
@@ -793,8 +940,20 @@ export default function RouteRegisterScreen({ navigation }: Props) {
       <MapStopSelectModal
         visible={stopModal.visible}
         title={stopModal.field === 'start' ? '승차 정류장 선택' : '하차 정류장 선택'}
+        skipRouteSelection={stopModal.field === 'end'}
         onSelect={handleStopSelect}
         onClose={() => setStopModal(s => ({ ...s, visible: false }))}
+      />
+
+      {/* 지하철 역 선택 */}
+      <SubwayStationPickerModal
+        visible={subwayPicker.visible}
+        title={subwayPicker.field === 'start' ? '승차 역 선택' : '하차 역 선택'}
+        line={
+          segments[subwayPicker.segIndex]?.line_name ?? '1호선'
+        }
+        onSelect={handleSubwayStationSelect}
+        onClose={() => setSubwayPicker(s => ({ ...s, visible: false }))}
       />
     </>
   );
@@ -892,6 +1051,42 @@ const tp = StyleSheet.create({
   cancelText: { fontSize: 15, color: '#666', fontWeight: '600' },
   confirmBtn: { flex: 1, height: 50, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1A73E8' },
   confirmText: { fontSize: 15, color: '#fff', fontWeight: '700' },
+});
+
+// SubwayStationPicker 스타일
+const ss = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    maxHeight: '80%', paddingBottom: 8,
+  },
+  handle: { width: 40, height: 4, backgroundColor: '#DDD', borderRadius: 2, alignSelf: 'center', marginTop: 12, marginBottom: 4 },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: '#EEE',
+  },
+  closeBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  closeText: { fontSize: 18, color: '#666' },
+  title: { fontSize: 17, fontWeight: '700', color: '#222' },
+  searchWrap: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#EEE' },
+  searchInput: {
+    backgroundColor: '#F5F5F5', borderRadius: 10,
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#222',
+  },
+  center: { padding: 40, alignItems: 'center', justifyContent: 'center' },
+  emptyText: { color: '#aaa', fontSize: 14 },
+  stationItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+  },
+  lineTag: {
+    borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, minWidth: 44, alignItems: 'center',
+  },
+  lineTagText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  stationName: { fontSize: 16, fontWeight: '700', color: '#222' },
+  stationFullName: { fontSize: 12, color: '#888', marginTop: 2 },
+  arrow: { fontSize: 22, color: '#ccc', fontWeight: '700' },
 });
 
 // MapStopSelect 스타일

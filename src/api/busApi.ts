@@ -89,3 +89,24 @@ export async function fetchBusPositions(routeId: string): Promise<any[]> {
     return [];
   }
 }
+
+/** 지하철 역 목록 조회 */
+export interface SubwayStation {
+  line: string;
+  seq: number;
+  name: string;
+  fullName: string;
+  color: string;
+}
+
+export async function fetchSubwayStations(line?: string): Promise<SubwayStation[]> {
+  try {
+    const path = line
+      ? `/api/subway/stations?line=${encodeURIComponent(line)}`
+      : '/api/subway/stations';
+    return await RestApi.get<SubwayStation[]>(path);
+  } catch (err) {
+    console.error('[busApi] fetchSubwayStations error:', err);
+    return [];
+  }
+}
