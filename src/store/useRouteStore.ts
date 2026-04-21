@@ -44,6 +44,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       set(state => ({ routes: [newRoute, ...state.routes], loading: false }));
     } catch (e: any) {
       set({ error: e.message, loading: false });
+      throw e;
     }
   },
 

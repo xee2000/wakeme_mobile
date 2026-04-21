@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, Route } from '../types';
@@ -21,9 +22,11 @@ export default function RouteListScreen({ navigation }: Props) {
   const user = useAuthStore(s => s.user);
   const { routes, loading, loadRoutes, removeRoute } = useRouteStore();
 
-  useEffect(() => {
-    if (user) loadRoutes(user.id);
-  }, [user]);
+  useFocusEffect(
+    useCallback(() => {
+      if (user) loadRoutes(user.id);
+    }, [user]),
+  );
 
   const handleDelete = (route: Route) => {
     Alert.alert('경로 삭제', `"${route.name}" 경로를 삭제할까요?`, [

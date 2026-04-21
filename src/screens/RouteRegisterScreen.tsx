@@ -571,6 +571,8 @@ export default function RouteRegisterScreen({ navigation }: Props) {
   const [routeName, setRouteName] = useState('');
   const [hour, setHour] = useState('08');
   const [minute, setMinute] = useState('00');
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+  const log = (msg: string) => setDebugLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 9)]);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [segments, setSegments] = useState<Omit<RouteSegment, 'id' | 'route_id'>[]>([
     { ...EMPTY_SEGMENT },
@@ -639,6 +641,7 @@ export default function RouteRegisterScreen({ navigation }: Props) {
   };
 
   const handleSave = async () => {
+    log(`handleSave 호출됨 user=${user?.id ?? 'null'}`);
     if (!routeName.trim()) { Alert.alert('알림', '경로 이름을 입력해주세요.'); return; }
     for (const seg of segments) {
       if (seg.mode === 'bus' && !seg.bus_no?.trim()) {
@@ -651,8 +654,16 @@ export default function RouteRegisterScreen({ navigation }: Props) {
         Alert.alert('알림', '지하철 노선명을 입력해주세요.'); return;
       }
     }
-    await addRoute(user!.id, routeName.trim(), `${hour}:${minute}`, segments);
-    navigation.goBack();
+    log(`저장 시작 - 세그먼트 ${segments.length}개`);
+    try {
+      await addRoute(user!.id, routeName.trim(), `${hour}:${minute}`, segments);
+      log('저장 성공 ✅');
+      navigation.goBack();
+    } catch (e: any) {
+      const msg = e?.message ?? e?.error_description ?? JSON.stringify(e);
+      log(`❌ 저장 실패: ${msg}`);
+      Alert.alert('저장 실패', msg);
+    }
   };
 
   return (
@@ -756,9 +767,17 @@ export default function RouteRegisterScreen({ navigation }: Props) {
           <Text style={styles.addSegBtnText}>+ 구간 추가 (환승)</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={loading}>
+        <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={false}>
           {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>경로 저장</Text>}
         </TouchableOpacity>
+
+        {debugLog.length > 0 && (
+          <View style={{ marginTop: 12, backgroundColor: '#111', borderRadius: 8, padding: 10 }}>
+            {debugLog.map((line, i) => (
+              <Text key={i} style={{ color: '#0f0', fontSize: 11, fontFamily: 'monospace' }}>{line}</Text>
+            ))}
+          </View>
+        )}
       </ScrollView>
       </KeyboardAvoidingView>
 

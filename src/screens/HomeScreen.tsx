@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList } from '../types';
@@ -21,9 +22,11 @@ export default function HomeScreen({ navigation }: Props) {
   const logout = useAuthStore(s => s.logout);
   const { routes, loading, loadRoutes } = useRouteStore();
 
-  useEffect(() => {
-    if (user) loadRoutes(user.id);
-  }, [user]);
+  useFocusEffect(
+    useCallback(() => {
+      if (user) loadRoutes(user.id);
+    }, [user]),
+  );
 
   const handleLogout = () => {
     Alert.alert('로그아웃', '정말 로그아웃 하시겠어요?', [
