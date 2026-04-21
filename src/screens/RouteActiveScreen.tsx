@@ -9,7 +9,7 @@ import {
   PermissionsAndroid,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Geolocation from 'react-native-geolocation-service';
+import Geolocation from '@react-native-community/geolocation';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, RouteSegment } from '../types';
@@ -78,7 +78,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     watchId.current = Geolocation.watchPosition(
       pos => handlePosition(pos.coords.latitude, pos.coords.longitude),
       err => console.warn('[GPS]', err),
-      { enableHighAccuracy: true, interval: 5000, fastestInterval: 3000 },
+      { enableHighAccuracy: true, interval: 5000, maximumAge: 3000 },
     );
   };
 
