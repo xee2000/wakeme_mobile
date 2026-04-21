@@ -92,8 +92,11 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
-        // 네이버 지도 클라이언트 ID (local.properties → localProps 로 읽어 Manifest 에 주입)
-        manifestPlaceholders = [NAVER_CLIENT_ID: (localProps.getProperty("NAVER_CLIENT_ID") ?: "")]
+        // 네이버 지도 클라이언트 ID + cleartext 기본값 설정
+        manifestPlaceholders = [
+            NAVER_CLIENT_ID: (localProps.getProperty("NAVER_CLIENT_ID") ?: ""),
+            usesCleartextTraffic: "false"
+        ]
     }
     signingConfigs {
         debug {
@@ -106,6 +109,8 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+            // HTTP 허용 (개발 서버 http://10.0.2.2:3000 접근용)
+            manifestPlaceholders = [usesCleartextTraffic: "true"]
         }
         release {
             // Caution! In production, you need to generate your own keystore file.

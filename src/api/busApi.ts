@@ -1,6 +1,11 @@
+import { Platform } from 'react-native';
 import { BusStop } from '../types';
 
-const SERVER_BASE = process.env.SERVER_URL ?? 'http://localhost:3000';
+// 실기기: PC 실제 IP, 에뮬레이터: 10.0.2.2
+const DEFAULT_SERVER =
+  Platform.OS === 'android' ? 'http://192.168.219.104:3000' : 'http://localhost:3000';
+
+const SERVER_BASE = process.env.SERVER_URL ?? DEFAULT_SERVER;
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${SERVER_BASE}${path}`);
