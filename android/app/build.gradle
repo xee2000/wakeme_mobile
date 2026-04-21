@@ -124,6 +124,9 @@ dependencies {
     // 카카오 SDK
     implementation("com.kakao.sdk:v2-common:2.20.1")
 
+    // 네이버 지도 SDK (MainApplication.kt 에서 NaverMapSdk.getInstance 호출에 필요)
+    implementation("com.naver.maps:map-sdk:3.23.0")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {
