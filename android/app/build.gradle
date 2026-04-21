@@ -134,6 +134,9 @@ dependencies {
     // 카카오 SDK (MainApplication.kt에서 KakaoSdk.init 호출에 필요)
     implementation("com.kakao.sdk:v2-common:2.20.1")
 
+    // 네이버 지도 SDK (MainApplication.kt에서 직접 초기화에 필요)
+    implementation("com.naver.maps:map-sdk:3.23.0")
+
     // GMS 버전 명시 (Naver Maps / Geolocation 충돌 방지)
     implementation 'com.google.android.gms:play-services-location:21.3.0'
     implementation 'com.google.android.gms:play-services-base:18.5.0'

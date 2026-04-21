@@ -1,6 +1,6 @@
 import { BusStop } from '../types';
 
-const SERVER_BASE = process.env.SERVER_URL ?? 'http://10.0.2.2:3000';
+const SERVER_BASE = process.env.SERVER_URL ?? 'http://localhost:3000';
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${SERVER_BASE}${path}`);

@@ -7,6 +7,7 @@ import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.kakao.sdk.common.KakaoSdk
+import com.naver.maps.map.NaverMapSdk
 
 class MainApplication : Application(), ReactApplication {
 
@@ -25,6 +26,7 @@ class MainApplication : Application(), ReactApplication {
     super.onCreate()
     // 카카오 SDK 초기화 (네이티브 앱 키)
     KakaoSdk.init(this, "b1a33e107f188d1a51e5302ead784509")
+    NaverMapSdk.getInstance(this).client = NaverMapSdk.NcpKeyClient("hudu5weji7")
     loadReactNative(this)
   }
 }
