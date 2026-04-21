@@ -1,18 +1,5 @@
-import { Platform } from 'react-native';
 import { BusStop } from '../types';
-
-// 실기기: PC 실제 IP, 에뮬레이터: 10.0.2.2
-const DEFAULT_SERVER =
-  Platform.OS === 'android' ? 'http://192.168.219.104:3000' : 'http://localhost:3000';
-
-const SERVER_BASE = process.env.SERVER_URL ?? DEFAULT_SERVER;
-
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${SERVER_BASE}${path}`);
-  if (!res.ok) throw new Error(`API 오류: ${res.status}`);
-  const json = await res.json();
-  return json.data as T;
-}
+import { RestApi } from './RestApi';
 
 // 공공 API 응답 매핑
 function mapStop(item: any): BusStop {
@@ -38,7 +25,7 @@ function mapLocalStop(item: any): BusStop & { distance?: number } {
 /** 노선번호로 정류장 목록 조회 */
 export async function fetchStopsByRouteName(routeNo: string): Promise<BusStop[]> {
   try {
-    const items = await get<any[]>(`/api/bus/stops?routeNo=${encodeURIComponent(routeNo)}`);
+    const items = await RestApi.get<any[]>(`/api/bus/stops?routeNo=${encodeURIComponent(routeNo)}`);
     return items.map(mapStop);
   } catch (err) {
     console.error('[busApi] fetchStopsByRouteName error:', err);
@@ -49,9 +36,8 @@ export async function fetchStopsByRouteName(routeNo: string): Promise<BusStop[]>
 /** 정류장 이름으로 검색 (서버 정적 데이터) */
 export async function searchStops(name: string): Promise<BusStop[]> {
   try {
-    const res = await fetch(`${SERVER_BASE}/api/stops/search?name=${encodeURIComponent(name)}`);
-    const json = await res.json();
-    return (json.data ?? []).map(mapLocalStop);
+    const items = await RestApi.get<any[]>(`/api/stops/search?name=${encodeURIComponent(name)}`);
+    return items.map(mapLocalStop);
   } catch (err) {
     console.error('[busApi] searchStops error:', err);
     return [];
@@ -61,9 +47,8 @@ export async function searchStops(name: string): Promise<BusStop[]> {
 /** GPS 좌표로 근처 정류장 조회 (서버 정적 데이터 + 거리 계산) */
 export async function fetchNearbyStops(lat: number, lng: number): Promise<BusStop[]> {
   try {
-    const res = await fetch(`${SERVER_BASE}/api/stops/nearby?lat=${lat}&lng=${lng}`);
-    const json = await res.json();
-    return (json.data ?? []).map(mapLocalStop);
+    const items = await RestApi.get<any[]>(`/api/stops/nearby?lat=${lat}&lng=${lng}`);
+    return items.map(mapLocalStop);
   } catch (err) {
     console.error('[busApi] fetchNearbyStops error:', err);
     return [];
@@ -71,11 +56,14 @@ export async function fetchNearbyStops(lat: number, lng: number): Promise<BusSto
 }
 
 /** 정류장에 경유하는 노선 목록 조회 */
-export async function fetchRoutesByStop(stopId: string): Promise<{ routeId: string; routeNo: string; routeType: string; startStop: string; endStop: string }[]> {
+export async function fetchRoutesByStop(stopId: string): Promise<{
+  routeId: string; routeNo: string; routeType: string; startStop: string; endStop: string;
+}[]> {
   try {
-    const res = await fetch(`${SERVER_BASE}/api/stops/${encodeURIComponent(stopId)}/routes`);
-    const json = await res.json();
-    return json.data ?? [];
+    const data = await RestApi.get<any>(`/api/stops/${encodeURIComponent(stopId)}/routes`);
+    // 서버 응답: { success, stopName, data: [...] } — RestApi.get 은 data 필드 추출
+    // 여기서는 배열 or 객체 모두 대응
+    return Array.isArray(data) ? data : (data?.data ?? []);
   } catch (err) {
     console.error('[busApi] fetchRoutesByStop error:', err);
     return [];
@@ -85,7 +73,7 @@ export async function fetchRoutesByStop(stopId: string): Promise<{ routeId: stri
 /** 정류장 ID로 도착 예정 버스 조회 */
 export async function fetchArrivingBuses(nodeId: string): Promise<any[]> {
   try {
-    return await get<any[]>(`/api/bus/arriving?nodeId=${encodeURIComponent(nodeId)}`);
+    return await RestApi.get<any[]>(`/api/bus/arriving?nodeId=${encodeURIComponent(nodeId)}`);
   } catch (err) {
     console.error('[busApi] fetchArrivingBuses error:', err);
     return [];
@@ -95,7 +83,7 @@ export async function fetchArrivingBuses(nodeId: string): Promise<any[]> {
 /** 노선 ID로 버스 현재 위치 조회 */
 export async function fetchBusPositions(routeId: string): Promise<any[]> {
   try {
-    return await get<any[]>(`/api/bus/positions?routeId=${encodeURIComponent(routeId)}`);
+    return await RestApi.get<any[]>(`/api/bus/positions?routeId=${encodeURIComponent(routeId)}`);
   } catch (err) {
     console.error('[busApi] fetchBusPositions error:', err);
     return [];
