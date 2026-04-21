@@ -21,9 +21,7 @@ const SERVER_PORT = 3000;
 
 const BASE_URL =
   process.env.SERVER_URL ??
-  (Platform.OS === 'android'
-    ? `http://${SERVER_IP}:${SERVER_PORT}`
-    : `http://localhost:${SERVER_PORT}`);
+  'https://wakeme-api.fly.dev';
 
 // ── 공통 헤더 ──────────────────────────────────────────────────
 function headers(extra?: Record<string, string>): Record<string, string> {
