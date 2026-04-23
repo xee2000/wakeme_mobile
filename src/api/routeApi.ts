@@ -46,6 +46,40 @@ export async function saveRoute(
   return { ...routeData, segments: segRows };
 }
 
+// ── 경로 수정 ──────────────────────────────────
+export async function updateRoute(
+  routeId: string,
+  name: string,
+  departTime: string,
+  segments: Omit<RouteSegment, 'id' | 'route_id'>[],
+): Promise<Route> {
+  const { data: routeData, error: routeErr } = await supabase
+    .from('routes')
+    .update({ name, depart_time: departTime })
+    .eq('id', routeId)
+    .select()
+    .single();
+
+  if (routeErr) throw routeErr;
+
+  const { error: delErr } = await supabase
+    .from('route_segments')
+    .delete()
+    .eq('route_id', routeId);
+  if (delErr) throw delErr;
+
+  const segRows = segments.map((s, i) => ({
+    ...s,
+    route_id: routeId,
+    order_index: i,
+  }));
+
+  const { error: segErr } = await supabase.from('route_segments').insert(segRows);
+  if (segErr) throw segErr;
+
+  return { ...routeData, segments: segRows };
+}
+
 // ── 경로 삭제 ──────────────────────────────────
 export async function deleteRoute(routeId: string): Promise<void> {
   const { error } = await supabase.from('routes').delete().eq('id', routeId);

@@ -5,12 +5,22 @@ import notifee, {
   RepeatFrequency,
 } from '@notifee/react-native';
 
-const CHANNEL_ID = 'wakeme-alert';
+// 포그라운드 서비스 유지용 (낮은 우선순위 — 조용히 상단바에만 표시)
+export const CHANNEL_TRACKING = 'wakeme-tracking';
+// 실제 하차 이벤트 알림용 (높은 우선순위 — 소리·진동)
+export const CHANNEL_ALERT = 'wakeme-alert';
 
 /** 알림 채널 초기화 (앱 시작 시 1회 호출) */
 export async function setupNotificationChannel(): Promise<void> {
   await notifee.createChannel({
-    id: CHANNEL_ID,
+    id: CHANNEL_TRACKING,
+    name: 'WakeMe 모니터링 중',
+    importance: AndroidImportance.LOW,
+    sound: undefined,
+    vibration: false,
+  });
+  await notifee.createChannel({
+    id: CHANNEL_ALERT,
     name: 'WakeMe 하차 알림',
     importance: AndroidImportance.HIGH,
     sound: 'default',
@@ -24,7 +34,7 @@ export async function sendPrepareNotification(stopName: string): Promise<void> {
     title: '🔔 곧 하차할 정류장입니다',
     body: `다음 정류장 "${stopName}" 에서 준비하세요!`,
     android: {
-      channelId: CHANNEL_ID,
+      channelId: CHANNEL_ALERT,
       importance: AndroidImportance.HIGH,
       pressAction: { id: 'default' },
     },
@@ -40,7 +50,7 @@ export async function sendExitNotification(stopName: string): Promise<void> {
     title: '🚨 지금 내리세요!',
     body: `"${stopName}" 정류장입니다. 지금 내리세요!`,
     android: {
-      channelId: CHANNEL_ID,
+      channelId: CHANNEL_ALERT,
       importance: AndroidImportance.HIGH,
       pressAction: { id: 'default' },
       vibrationPattern: [0, 500, 200, 500],
@@ -81,7 +91,7 @@ export async function scheduleDepartureNotification(
       title: '🚌 출발 시간입니다!',
       body: `${routeName} 경로를 시작할 시간이에요`,
       android: {
-        channelId: CHANNEL_ID,
+        channelId: CHANNEL_ALERT,
         importance: AndroidImportance.HIGH,
         pressAction: { id: 'default' },
         vibrationPattern: [0, 300, 200, 300],

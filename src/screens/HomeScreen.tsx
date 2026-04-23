@@ -10,6 +10,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { logout as kakaoLogout } from '@react-native-kakao/user';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList } from '../types';
@@ -31,7 +32,14 @@ export default function HomeScreen({ navigation }: Props) {
   const handleLogout = () => {
     Alert.alert('로그아웃', '정말 로그아웃 하시겠어요?', [
       { text: '취소', style: 'cancel' },
-      { text: '로그아웃', style: 'destructive', onPress: logout },
+      {
+        text: '로그아웃',
+        style: 'destructive',
+        onPress: async () => {
+          try { await kakaoLogout(); } catch (e) { /* 무시 */ }
+          logout();
+        },
+      },
     ]);
   };
 

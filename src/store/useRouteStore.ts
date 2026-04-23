@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { Route, RouteSegment } from '../types';
-import { fetchRoutes, saveRoute, deleteRoute } from '../api/routeApi';
+import { fetchRoutes, saveRoute, updateRoute as apiUpdateRoute, deleteRoute } from '../api/routeApi';
 
 interface RouteState {
   routes: Route[];
@@ -13,6 +13,14 @@ interface RouteState {
   // 경로 저장
   addRoute: (
     userId: string,
+    name: string,
+    departTime: string,
+    segments: Omit<RouteSegment, 'id' | 'route_id'>[],
+  ) => Promise<void>;
+
+  // 경로 수정
+  updateRoute: (
+    routeId: string,
     name: string,
     departTime: string,
     segments: Omit<RouteSegment, 'id' | 'route_id'>[],
@@ -42,6 +50,20 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     try {
       const newRoute = await saveRoute(userId, name, departTime, segments);
       set(state => ({ routes: [newRoute, ...state.routes], loading: false }));
+    } catch (e: any) {
+      set({ error: e.message, loading: false });
+      throw e;
+    }
+  },
+
+  updateRoute: async (routeId, name, departTime, segments) => {
+    set({ loading: true, error: null });
+    try {
+      const updated = await apiUpdateRoute(routeId, name, departTime, segments);
+      set(state => ({
+        routes: state.routes.map(r => (r.id === routeId ? updated : r)),
+        loading: false,
+      }));
     } catch (e: any) {
       set({ error: e.message, loading: false });
       throw e;

@@ -675,10 +675,12 @@ function SubwayStationPickerModal({
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 메인 스크린
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-export default function RouteRegisterScreen({ navigation }: Props) {
+export default function RouteRegisterScreen({ route, navigation }: Props) {
   const insets = useSafeAreaInsets();
   const user = useAuthStore(s => s.user);
-  const { addRoute, loading } = useRouteStore();
+  const { addRoute, updateRoute, routes, loading } = useRouteStore();
+  const editingRouteId = route.params?.routeId;
+  const existingRoute = editingRouteId ? routes.find(r => r.id === editingRouteId) : undefined;
 
   const [routeName, setRouteName] = useState('');
   const [hour, setHour] = useState('08');
@@ -689,6 +691,28 @@ export default function RouteRegisterScreen({ navigation }: Props) {
   const [segments, setSegments] = useState<Omit<RouteSegment, 'id' | 'route_id'>[]>([
     { ...EMPTY_SEGMENT },
   ]);
+
+  useEffect(() => {
+    if (!existingRoute) return;
+    setRouteName(existingRoute.name);
+    const [h, m] = existingRoute.depart_time.split(':');
+    setHour(h ?? '08');
+    setMinute(m ?? '00');
+    setSegments(
+      existingRoute.segments.map(seg => ({
+        order_index: seg.order_index,
+        mode: seg.mode,
+        bus_no: seg.bus_no,
+        start_stop_name: seg.start_stop_name,
+        start_stop_id: seg.start_stop_id,
+        end_stop_name: seg.end_stop_name,
+        end_stop_id: seg.end_stop_id,
+        line_name: seg.line_name,
+        start_station: seg.start_station,
+        end_station: seg.end_station,
+      })),
+    );
+  }, [editingRouteId]);
 
   const [stopModal, setStopModal] = useState<{
     visible: boolean;
@@ -771,7 +795,7 @@ export default function RouteRegisterScreen({ navigation }: Props) {
   };
 
   const handleSave = async () => {
-    log(`handleSave 호출됨 user=${user?.id ?? 'null'}`);
+    log(`handleSave 호출됨 user=${user?.id ?? 'null'} editingRouteId=${editingRouteId ?? 'none'}`);
     if (!routeName.trim()) { Alert.alert('알림', '경로 이름을 입력해주세요.'); return; }
     for (const seg of segments) {
       if (seg.mode === 'bus' && !seg.bus_no?.trim()) {
@@ -786,8 +810,13 @@ export default function RouteRegisterScreen({ navigation }: Props) {
     }
     log(`저장 시작 - 세그먼트 ${segments.length}개`);
     try {
-      await addRoute(user!.id, routeName.trim(), `${hour}:${minute}`, segments);
-      log('저장 성공 ✅');
+      if (editingRouteId) {
+        await updateRoute(editingRouteId, routeName.trim(), `${hour}:${minute}`, segments);
+        log('수정 성공 ✅');
+      } else {
+        await addRoute(user!.id, routeName.trim(), `${hour}:${minute}`, segments);
+        log('저장 성공 ✅');
+      }
       navigation.goBack();
     } catch (e: any) {
       const msg = e?.message ?? e?.error_description ?? JSON.stringify(e);
@@ -914,7 +943,11 @@ export default function RouteRegisterScreen({ navigation }: Props) {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={false}>
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>경로 저장</Text>}
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.saveBtnText}>{editingRouteId ? '수정 완료' : '경로 저장'}</Text>
+          )}
         </TouchableOpacity>
 
         {debugLog.length > 0 && (
