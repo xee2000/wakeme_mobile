@@ -28,7 +28,7 @@
       <!-- 카카오 네이티브 앱 키 -->
       <meta-data
         android:name="com.kakao.sdk.AppKey"
-        android:value="b1a33e107f188d1a51e5302ead784509" />
+        android:value="b04b17eeb689cfd9d2a18871748bff94" />
 
 
       <!-- 카카오 로그인 리다이렉트 Activity -->
@@ -39,7 +39,7 @@
           <action android:name="android.intent.action.VIEW" />
           <category android:name="android.intent.category.DEFAULT" />
           <category android:name="android.intent.category.BROWSABLE" />
-          <data android:host="oauth" android:scheme="kakaob1a33e107f188d1a51e5302ead784509" />
+          <data android:host="oauth" android:scheme="kakaob04b17eeb689cfd9d2a18871748bff94" />
         </intent-filter>
       </activity>
 
