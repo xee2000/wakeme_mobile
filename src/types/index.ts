@@ -49,6 +49,7 @@ export interface BusStop {
 
 // 내비게이션 스택 파라미터
 export type RootStackParamList = {
+  Permission: undefined;
   Login: undefined;
   Home: undefined;
   RouteList: undefined;

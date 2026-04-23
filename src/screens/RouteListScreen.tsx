@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, Route } from '../types';
+import { scheduleDepartureNotification } from '../utils/notifications';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteList'>;
 
@@ -27,6 +28,12 @@ export default function RouteListScreen({ navigation }: Props) {
       if (user) loadRoutes(user.id);
     }, [user]),
   );
+
+  useEffect(() => {
+    routes.forEach(r => {
+      scheduleDepartureNotification(r.id, r.name, r.depart_time).catch(console.warn);
+    });
+  }, [routes]);
 
   const handleDelete = (route: Route) => {
     Alert.alert('경로 삭제', `"${route.name}" 경로를 삭제할까요?`, [

@@ -9,11 +9,12 @@ import {
   PermissionsAndroid,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Geolocation from '@react-native-community/geolocation';
+import Geolocation from 'react-native-geolocation-service';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, RouteSegment } from '../types';
 import { getDistanceMeters, ALERT_DISTANCE, Coordinate } from '../utils/geofence';
+import notifee, { AndroidImportance } from '@notifee/react-native';
 import {
   setupNotificationChannel,
   sendPrepareNotification,
@@ -21,6 +22,8 @@ import {
   requestNotificationPermission,
 } from '../utils/notifications';
 import { fetchStopsByRouteName } from '../api/busApi';
+
+const FG_NOTIFICATION_ID = 'wakeme_tracking';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteActive'>;
 type AlertState = 'idle' | 'prepare_sent' | 'exit_sent' | 'done';
@@ -47,6 +50,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 
     return () => {
       if (watchId.current !== null) Geolocation.clearWatch(watchId.current);
+      notifee.stopForegroundService();
     };
   }, []);
 
@@ -63,6 +67,18 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         navigation.goBack();
         return;
       }
+      if (parseInt(String(Platform.Version), 10) >= 29) {
+        await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+        );
+      }
+    } else {
+      const auth = await Geolocation.requestAuthorization('always');
+      if (auth !== 'granted') {
+        Alert.alert('위치 권한 필요', '하차 알림을 위해 위치 권한이 필요합니다.');
+        navigation.goBack();
+        return;
+      }
     }
 
     if (lastSeg.mode === 'bus' && lastSeg.bus_no) {
@@ -75,11 +91,43 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       }
     }
 
-    watchId.current = Geolocation.watchPosition(
-      pos => handlePosition(pos.coords.latitude, pos.coords.longitude),
-      err => console.warn('[GPS]', err),
-      { enableHighAccuracy: true, interval: 5000, maximumAge: 3000 },
-    );
+    try {
+      // notifee 포그라운드 서비스 채널 생성 및 서비스 시작
+      const channelId = await notifee.createChannel({
+        id: 'tracking',
+        name: '하차 알림 서비스',
+        importance: AndroidImportance.HIGH,
+      });
+
+      await notifee.displayNotification({
+        id: FG_NOTIFICATION_ID,
+        title: 'WakeMe 모니터링 중 🚌',
+        body: stopName ? `${stopName} 접근 시 알림드립니다` : '하차 지점 모니터링 중...',
+        android: {
+          channelId,
+          asForegroundService: true,
+          smallIcon: 'ic_notification',
+          color: '#1A73E8',
+          ongoing: true,
+          pressAction: { id: 'default' },
+        },
+      });
+
+      // GPS 추적 시작
+      watchId.current = Geolocation.watchPosition(
+        pos => handlePosition(pos.coords.latitude, pos.coords.longitude),
+        err => console.warn('[GPS]', err),
+        {
+          enableHighAccuracy: true,
+          interval: 5000,
+          maximumAge: 3000,
+          showsBackgroundLocationIndicator: true,
+        },
+      );
+    } catch (e) {
+      console.warn('[GPS] 시작 실패:', e);
+      Alert.alert('오류', '위치 추적을 시작할 수 없습니다. 위치 권한을 확인해주세요.');
+    }
   };
 
   const handlePosition = (lat: number, lon: number) => {
@@ -137,8 +185,8 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         )}
 
         <View style={styles.legend}>
-          <Text style={styles.legendItem}>· 300m 이내 → 준비 알림</Text>
-          <Text style={styles.legendItem}>· 150m 이내 → 하차 알림</Text>
+          <Text style={styles.legendItem}>· 500m 이내 → 준비 알림</Text>
+          <Text style={styles.legendItem}>· 200m 이내 → 하차 알림</Text>
         </View>
       </View>
 

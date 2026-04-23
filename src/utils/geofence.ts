@@ -30,6 +30,6 @@ function toRad(deg: number): number {
 
 /** 알림 임계 거리 (m) */
 export const ALERT_DISTANCE = {
-  PREPARE: 300, // 하차 전 정류장 (준비 알림)
-  EXIT: 150,    // 하차 정류장 (하차 알림)
+  PREPARE: 500, // 하차 전 정류장 (준비 알림)
+  EXIT: 200,    // 하차 정류장 (하차 알림)
 } as const;

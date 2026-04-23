@@ -9,8 +9,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { login, me } from '@react-native-kakao/user';
+import { MMKV } from 'react-native-mmkv';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../api/supabaseClient';
+
+const storage = new MMKV();
+const LOGGED_IN_KEY = 'wakeme_logged_in_before';
 
 export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
@@ -35,6 +39,8 @@ export default function LoginScreen() {
       });
       if (error) console.warn('[Login] supabase upsert error:', error.message);
 
+      // 최초 로그인 플래그 저장 (재설치 시 초기화됨)
+      storage.set(LOGGED_IN_KEY, true);
       setUser({ id: userId, nickname, profileImageUrl });
     } catch (e: any) {
       Alert.alert('로그인 실패', e.message ?? '다시 시도해 주세요.');
