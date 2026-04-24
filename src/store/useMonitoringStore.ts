@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import Geolocation from '@react-native-community/geolocation';
+import Geolocation from 'react-native-geolocation-service';
 import notifee from '@notifee/react-native';
 import { Coordinate } from '../utils/geofence';
 

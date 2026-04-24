@@ -9,7 +9,7 @@ import {
   PermissionsAndroid,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Geolocation from '@react-native-community/geolocation';
+import Geolocation from 'react-native-geolocation-service';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
 import { useMonitoringStore } from '../store/useMonitoringStore';
@@ -24,6 +24,8 @@ import {
   CHANNEL_TRACKING,
 } from '../utils/notifications';
 import { fetchStopsByRouteName } from '../api/busApi';
+import { RestApi } from '../api/RestApi';
+import { useAuthStore } from '../store/useAuthStore';
 
 const FG_NOTIFICATION_ID = 'wakeme_tracking';
 
@@ -33,6 +35,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
   const { routeId } = route.params;
   const insets = useSafeAreaInsets();
   const routes = useRouteStore(s => s.routes);
+  const user   = useAuthStore(s => s.user);
   const targetRoute = routes.find(r => r.id === routeId);
 
   const monitoringRouteId = useMonitoringStore(s => s.routeId);
@@ -86,6 +89,19 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       }
     }
 
+    // ── 서버에 모니터링 시작 로그 전송 ──────────────────────
+    const busNos = targetRoute.segments
+      .filter(s => s.mode === 'bus' && s.bus_no)
+      .map(s => s.bus_no as string);
+
+    RestApi.post('/api/notify/start', {
+      userId:      user?.id ?? 'unknown',
+      routeName:   targetRoute.name,
+      busNos,
+      endStopName: stopName,
+      departTime:  targetRoute.depart_time,
+    }).catch(e => console.warn('[LOG] 서버 로그 전송 실패:', e));
+
     let targetCoord = useMonitoringStore.getState().targetCoord;
     if (lastSeg.mode === 'bus' && lastSeg.bus_no) {
       try {
@@ -102,6 +118,9 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     }
 
     try {
+      // 이전 서비스가 남아있으면 정리
+      try { await notifee.stopForegroundService(); } catch (_) {}
+
       await notifee.displayNotification({
         id: FG_NOTIFICATION_ID,
         title: 'WakeMe 모니터링 중',
@@ -109,7 +128,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         android: {
           channelId: CHANNEL_TRACKING,
           asForegroundService: true,
-          smallIcon: 'ic_notification',
+          smallIcon: 'ic_launcher',   // mipmap에 항상 있는 기본 아이콘으로 fallback
           color: '#1A73E8',
           ongoing: true,
           pressAction: { id: 'default' },
@@ -141,9 +160,9 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       );
 
       activate(routeId, targetCoord, stopName, watchId);
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[GPS] 시작 실패:', e);
-      Alert.alert('오류', '위치 추적을 시작할 수 없습니다. 위치 권한을 확인해주세요.');
+      Alert.alert('오류', `위치 추적 시작 실패\n${e?.message ?? String(e)}`);
     }
   };
 

@@ -32,4 +32,11 @@ allprojects {
         // 네이버 지도 SDK
         maven { url 'https://repository.map.naver.com/archive/maven' }
     }
+
+    // play-services-location 버전 충돌 방지 (SettingsClient interface/class 혼재 이슈)
+    configurations.all {
+        resolutionStrategy {
+            force 'com.google.android.gms:play-services-location:21.3.0'
+        }
+    }
 }
