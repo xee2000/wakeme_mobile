@@ -28,7 +28,7 @@ export async function fetchStopsByRouteName(routeNo: string): Promise<BusStop[]>
     const items = await RestApi.get<any[]>(`/api/bus/stops?routeNo=${encodeURIComponent(routeNo)}`);
     return items.map(mapStop);
   } catch (err) {
-    console.error('[busApi] fetchStopsByRouteName error:', err);
+    console.error('[WAKE] fetchStopsByRouteName error:', err);
     return [];
   }
 }
@@ -39,7 +39,7 @@ export async function searchStops(name: string): Promise<BusStop[]> {
     const items = await RestApi.get<any[]>(`/api/stops/search?name=${encodeURIComponent(name)}`);
     return items.map(mapLocalStop);
   } catch (err) {
-    console.error('[busApi] searchStops error:', err);
+    console.error('[WAKE] searchStops error:', err);
     return [];
   }
 }
@@ -50,7 +50,7 @@ export async function fetchNearbyStops(lat: number, lng: number): Promise<BusSto
     const items = await RestApi.get<any[]>(`/api/stops/nearby?lat=${lat}&lng=${lng}`);
     return items.map(mapLocalStop);
   } catch (err) {
-    console.error('[busApi] fetchNearbyStops error:', err);
+    console.error('[WAKE] fetchNearbyStops error:', err);
     return [];
   }
 }
@@ -65,7 +65,7 @@ export async function fetchRoutesByStop(stopId: string): Promise<{
     // 여기서는 배열 or 객체 모두 대응
     return Array.isArray(data) ? data : (data?.data ?? []);
   } catch (err) {
-    console.error('[busApi] fetchRoutesByStop error:', err);
+    console.error('[WAKE] fetchRoutesByStop error:', err);
     return [];
   }
 }
@@ -75,7 +75,7 @@ export async function fetchArrivingBuses(nodeId: string): Promise<any[]> {
   try {
     return await RestApi.get<any[]>(`/api/bus/arriving?nodeId=${encodeURIComponent(nodeId)}`);
   } catch (err) {
-    console.error('[busApi] fetchArrivingBuses error:', err);
+    console.error('[WAKE] fetchArrivingBuses error:', err);
     return [];
   }
 }
@@ -85,7 +85,7 @@ export async function fetchBusPositions(routeId: string): Promise<any[]> {
   try {
     return await RestApi.get<any[]>(`/api/bus/positions?routeId=${encodeURIComponent(routeId)}`);
   } catch (err) {
-    console.error('[busApi] fetchBusPositions error:', err);
+    console.error('[WAKE] fetchBusPositions error:', err);
     return [];
   }
 }
@@ -106,7 +106,7 @@ export async function fetchSubwayStations(line?: string): Promise<SubwayStation[
       : '/api/subway/stations';
     return await RestApi.get<SubwayStation[]>(path);
   } catch (err) {
-    console.error('[busApi] fetchSubwayStations error:', err);
+    console.error('[WAKE] fetchSubwayStations error:', err);
     return [];
   }
 }

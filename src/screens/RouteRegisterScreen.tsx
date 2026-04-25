@@ -379,8 +379,8 @@ function MapStopSelectModal({
               isShowZoomControls={true}
               isShowCompass={false}
               onCameraChanged={handleCameraChanged}
-              onInitialized={() => console.log('[NaverMap] 초기화 성공')}
-              onOptionChanged={() => console.log('[NaverMap] 옵션 변경됨')}>
+              onInitialized={() => console.log('[WAKE] NaverMap 초기화 성공')}
+              onOptionChanged={() => console.log('[WAKE] NaverMap 옵션 변경됨')}>
 
               {/* 현재 위치 반경 표시 */}
               {userLat !== null && userLng !== null && (

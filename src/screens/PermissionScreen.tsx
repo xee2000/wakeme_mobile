@@ -111,7 +111,7 @@ export default function PermissionScreen({ navigation }: Props) {
         }
       }
     } catch (e) {
-      console.warn('[Permission]', e);
+      console.warn('[WAKE]', e);
     } finally {
       setLoading(false);
       navigation.replace('Login');

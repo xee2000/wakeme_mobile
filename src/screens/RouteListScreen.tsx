@@ -31,7 +31,7 @@ export default function RouteListScreen({ navigation }: Props) {
 
   useEffect(() => {
     routes.forEach(r => {
-      scheduleDepartureNotification(r.id, r.name, r.depart_time).catch(console.warn);
+      scheduleDepartureNotification(r.id, r.name, r.depart_time).catch(e => console.warn('[WAKE] 출발 알림 예약 실패:', e));
     });
   }, [routes]);
 
