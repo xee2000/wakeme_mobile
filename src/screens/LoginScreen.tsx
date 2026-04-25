@@ -37,7 +37,7 @@ export default function LoginScreen() {
         profile_image_url: profileImageUrl,
         updated_at: new Date().toISOString(),
       });
-      if (error) console.warn('[Login] supabase upsert error:', error.message);
+      if (error) console.warn('[WAKE] supabase upsert error:', error.message);
 
       // 최초 로그인 플래그 저장 (재설치 시 초기화됨)
       storage.set(LOGGED_IN_KEY, true);

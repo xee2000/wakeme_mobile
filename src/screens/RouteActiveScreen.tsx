@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,21 +9,18 @@ import {
   PermissionsAndroid,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Geolocation from 'react-native-geolocation-service';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
-import { useMonitoringStore } from '../store/useMonitoringStore';
+import { useMonitoringStore, saveMonitoringState } from '../store/useMonitoringStore';
 import { RootStackParamList, RouteSegment } from '../types';
-import { getDistanceMeters, ALERT_DISTANCE } from '../utils/geofence';
-import notifee from '@notifee/react-native';
+import notifee, { AndroidForegroundServiceType } from '@notifee/react-native';
 import {
   setupNotificationChannel,
-  sendPrepareNotification,
-  sendExitNotification,
+  sendBusArrivalNotification,
   requestNotificationPermission,
   CHANNEL_TRACKING,
 } from '../utils/notifications';
-import { fetchStopsByRouteName } from '../api/busApi';
+import { fetchStopsByRouteName, fetchArrivingBuses } from '../api/busApi';
 import { RestApi } from '../api/RestApi';
 import { useAuthStore } from '../store/useAuthStore';
 
@@ -41,11 +38,12 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
   const monitoringRouteId = useMonitoringStore(s => s.routeId);
   const status = useMonitoringStore(s => s.status);
   const distance = useMonitoringStore(s => s.distance);
-  const { activate, deactivate } = useMonitoringStore.getState();
+  const { deactivate } = useMonitoringStore.getState();
 
   const isMonitoring = monitoringRouteId === routeId;
 
   const [targetName, setTargetName] = useState('');
+  const departTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!targetRoute) return;
@@ -53,6 +51,12 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     const name = lastSeg.mode === 'bus' ? lastSeg.end_stop_name ?? '' : lastSeg.end_station ?? '';
     setTargetName(name);
   }, [targetRoute?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (departTimerRef.current) clearTimeout(departTimerRef.current);
+    };
+  }, []);
 
   const startMonitoring = async () => {
     if (!targetRoute) return;
@@ -75,21 +79,8 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
           PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
         );
       }
-    } else {
-      const hasPermission = await new Promise<boolean>(resolve => {
-        Geolocation.getCurrentPosition(
-          () => resolve(true),
-          () => resolve(false),
-          { enableHighAccuracy: false, timeout: 5000 },
-        );
-      });
-      if (!hasPermission) {
-        Alert.alert('위치 권한 필요', '하차 알림을 위해 위치 권한이 필요합니다.');
-        return;
-      }
     }
 
-    // ── 서버에 모니터링 시작 로그 전송 ──────────────────────
     const busNos = targetRoute.segments
       .filter(s => s.mode === 'bus' && s.bus_no)
       .map(s => s.bus_no as string);
@@ -100,9 +91,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       busNos,
       endStopName: stopName,
       departTime:  targetRoute.depart_time,
-    }).catch(e => console.warn('[LOG] 서버 로그 전송 실패:', e));
+    }).catch(e => console.warn('[WAKE] 서버 로그 전송 실패:', e));
 
-    let targetCoord = useMonitoringStore.getState().targetCoord;
+    // ── 첫 번째 버스 구간 정보 ──
+    const firstBusSeg = targetRoute.segments.find(s => s.mode === 'bus' && s.bus_no);
+
+    // ── 하차 정류장 좌표 조회 ──
+    let targetCoord: { latitude: number; longitude: number } | null = null;
     if (lastSeg.mode === 'bus' && lastSeg.bus_no) {
       try {
         const stops = await fetchStopsByRouteName(lastSeg.bus_no);
@@ -113,14 +108,42 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
           targetCoord = { latitude: found.gpslati, longitude: found.gpslong };
         }
       } catch (e) {
-        console.warn('[GPS] 정류장 조회 실패:', e);
+        console.warn('[WAKE] 정류장 조회 실패:', e);
       }
     }
 
+    // ── MMKV에 상태 저장 → registerForegroundService 콜백이 이걸 읽어 GPS 시작 ──
+    if (targetCoord) {
+      saveMonitoringState({
+        routeId,
+        targetCoord,
+        targetName: stopName,
+        departTime: targetRoute.depart_time,
+        busNo: firstBusSeg?.bus_no,
+        startStopId: firstBusSeg?.start_stop_id,
+        startStopName: firstBusSeg?.start_stop_name,
+      });
+      console.log('[WAKE] 모니터링 상태 저장 완료 routeId=%s', routeId);
+    } else {
+      console.warn('[WAKE] targetCoord 없음 — 하차 감지 불가');
+    }
+
+    // ── 출발 시간에 버스 도착 정보 알림 예약 ──
+    if (firstBusSeg?.bus_no) {
+      scheduleBusArrivalAlert(
+        targetRoute.depart_time,
+        firstBusSeg.bus_no,
+        firstBusSeg.start_stop_id,
+        firstBusSeg.start_stop_name ?? '',
+        departTimerRef,
+      );
+    }
+
     try {
-      // 이전 서비스가 남아있으면 정리
+      // 이전 서비스 정리
       try { await notifee.stopForegroundService(); } catch (_) {}
 
+      // 포그라운드 서비스 알림 표시 → OS가 서비스 시작 → registerForegroundService 콜백 호출 → GPS 시작
       await notifee.displayNotification({
         id: FG_NOTIFICATION_ID,
         title: 'WakeMe 모니터링 중',
@@ -128,41 +151,18 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         android: {
           channelId: CHANNEL_TRACKING,
           asForegroundService: true,
-          smallIcon: 'ic_launcher',   // mipmap에 항상 있는 기본 아이콘으로 fallback
+          foregroundServiceTypes: [AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_LOCATION],
+          smallIcon: 'ic_launcher',
           color: '#1A73E8',
           ongoing: true,
+          autoCancel: false,
           pressAction: { id: 'default' },
         },
       });
-
-      const watchId = Geolocation.watchPosition(
-        pos => {
-          const store = useMonitoringStore.getState();
-          if (!store.targetCoord) return;
-          const dist = getDistanceMeters(
-            { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
-            store.targetCoord,
-          );
-          store.setDistance(Math.round(dist));
-
-          const prev = store.status;
-          if (prev === 'done' || prev === 'exit_sent') return;
-          if (dist <= ALERT_DISTANCE.EXIT) {
-            sendExitNotification(store.targetName);
-            store.setStatus('exit_sent');
-          } else if (dist <= ALERT_DISTANCE.PREPARE && prev === 'idle') {
-            sendPrepareNotification(store.targetName);
-            store.setStatus('prepare_sent');
-          }
-        },
-        err => console.warn('[GPS]', err),
-        { enableHighAccuracy: true, interval: 5000, maximumAge: 3000 },
-      );
-
-      activate(routeId, targetCoord, stopName, watchId);
+      console.log('[WAKE] 포그라운드 서비스 알림 표시 완료');
     } catch (e: any) {
-      console.warn('[GPS] 시작 실패:', e);
-      Alert.alert('오류', `위치 추적 시작 실패\n${e?.message ?? String(e)}`);
+      console.error('[WAKE] 포그라운드 서비스 시작 실패:', e);
+      Alert.alert('오류', `모니터링 시작 실패\n${e?.message ?? String(e)}`);
     }
   };
 
@@ -260,6 +260,43 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       </TouchableOpacity>
     </View>
   );
+}
+
+function scheduleBusArrivalAlert(
+  departTime: string,
+  busNo: string,
+  startStopId: string | undefined,
+  startStopName: string,
+  timerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>,
+) {
+  const [dHour, dMin] = departTime.split(':').map(Number);
+  const now = new Date();
+  const departAt = new Date();
+  departAt.setHours(dHour, dMin, 0, 0);
+
+  const msUntilDepart = departAt.getTime() - now.getTime();
+  if (msUntilDepart <= 0 || msUntilDepart > 4 * 60 * 60 * 1000) return;
+
+  timerRef.current = setTimeout(async () => {
+    try {
+      let arrivalMin: number | null = null;
+      if (startStopId) {
+        const buses = await fetchArrivingBuses(startStopId);
+        const myBus = buses.find((b: any) => {
+          const rNo = String(b.routeno ?? b.routeNo ?? b.routeId ?? '');
+          return rNo === busNo;
+        });
+        if (myBus) {
+          const arrSec = myBus.arrtime ?? myBus.arrivalTime ?? myBus.predictTime1 ?? null;
+          if (arrSec != null) arrivalMin = Math.ceil(Number(arrSec) / 60);
+        }
+      }
+      await sendBusArrivalNotification(busNo, arrivalMin, startStopName);
+    } catch (e) {
+      console.warn('[WAKE] 버스 도착 정보 조회 실패:', e);
+      await sendBusArrivalNotification(busNo, null, startStopName).catch(() => {});
+    }
+  }, msUntilDepart);
 }
 
 const styles = StyleSheet.create({

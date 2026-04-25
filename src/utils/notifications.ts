@@ -63,6 +63,34 @@ export async function sendExitNotification(stopName: string): Promise<void> {
   });
 }
 
+/** 버스 도착 정보 알림 (출발 시간에 자동 발송) */
+export async function sendBusArrivalNotification(
+  busNo: string,
+  arrivalMin: number | null,
+  stopName: string,
+): Promise<void> {
+  const title = arrivalMin !== null
+    ? `🚌 ${busNo}번 버스 ${arrivalMin}분 후 도착`
+    : `🚌 ${busNo}번 버스 도착 정보`;
+  const body = arrivalMin !== null
+    ? `${stopName} 정류장에서 탑승 준비하세요`
+    : `${stopName} 정류장 — 도착 정보를 확인하세요`;
+
+  await notifee.displayNotification({
+    title,
+    body,
+    android: {
+      channelId: CHANNEL_ALERT,
+      importance: AndroidImportance.HIGH,
+      pressAction: { id: 'default' },
+      vibrationPattern: [0, 300, 200, 300],
+    },
+    ios: {
+      sound: 'default',
+    },
+  });
+}
+
 /** 알림 권한 요청 */
 export async function requestNotificationPermission(): Promise<boolean> {
   const settings = await notifee.requestPermission();
@@ -89,7 +117,7 @@ export async function scheduleDepartureNotification(
     {
       id: `departure-${routeId}`,
       title: '🚌 출발 시간입니다!',
-      body: `${routeName} 경로를 시작할 시간이에요`,
+      body: `${routeName} — 앱을 열어 버스 도착 정보를 확인하세요`,
       android: {
         channelId: CHANNEL_ALERT,
         importance: AndroidImportance.HIGH,
