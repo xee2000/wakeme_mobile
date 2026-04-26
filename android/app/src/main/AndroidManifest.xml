@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-          xmlns:tools="http://schemas.android.com/tools">
+          xmlns:tools="http://schemas.android.com/tools"
+    package="com.wakeme_mobile">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -55,15 +56,32 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
-      <service
-        android:name="com.agontuk.RNFusedLocation.LocationUpdatesService"
-        android:foregroundServiceType="location" />
 
-      <!-- notifee 포그라운드 서비스 — location 타입 추가 -->
-      <service
-        android:name="app.notifee.core.ForegroundService"
-        android:foregroundServiceType="location"
-        android:exported="false"
-        tools:replace="android:foregroundServiceType" />
+        <service
+            android:name="com.wakeme_mobile.WakeMeService"
+            android:foregroundServiceType="location"
+            android:exported="true"
+            tools:replace="android:foregroundServiceType" />
+
+        <receiver
+            android:name="com.wakeme_mobile.WakeMeBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="com.wakeme_mobile.RESTART_SERVICE"/>
+                <action android:name="com.wakeme_mobile.NOTIFICATION_DELETED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- GeofencingClient 진입 이벤트 수신 -->
+        <receiver
+            android:name="com.wakeme_mobile.WakeMeGeofenceReceiver"
+            android:exported="false" />
+
+        <!-- AlarmManager 출발 시간 알림 -->
+        <receiver
+            android:name="com.wakeme_mobile.WakeMeDepartureReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>

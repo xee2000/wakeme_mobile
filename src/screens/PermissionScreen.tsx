@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,19 @@ import {
   PermissionsAndroid,
   ScrollView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import notifee, { AndroidNotificationSetting } from '@notifee/react-native';
+import { MMKV } from 'react-native-mmkv';
 import { RootStackParamList } from '../types';
+import {
+  requestIgnoreBatteryOptimization,
+  isBatteryOptimizationIgnored,
+} from '../utils/nativeService';
+
+const storage = new MMKV();
+const PERMISSIONS_DONE_KEY = 'wakeme_permissions_done';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Permission'>;
 
@@ -48,6 +55,13 @@ export default function PermissionScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
 
+  // 이미 권한 설정을 완료한 경우 바로 Login으로
+  useEffect(() => {
+    if (storage.getBoolean(PERMISSIONS_DONE_KEY)) {
+      navigation.replace('Login');
+    }
+  }, []);
+
   const requestAll = async () => {
     setLoading(true);
     try {
@@ -63,14 +77,13 @@ export default function PermissionScreen({ navigation }: Props) {
           },
         );
 
-        // 2. 백그라운드 위치 (Android 10+ — 반드시 별도 요청)
+        // 2. 백그라운드 위치 (Android 10+)
         if (parseInt(String(Platform.Version), 10) >= 29) {
           await PermissionsAndroid.request(
             PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
             {
               title: '백그라운드 위치 권한 필요',
-              message:
-                '앱이 닫혀 있어도 정류장 접근을 감지하려면 위치를 "항상 허용"으로 설정해주세요.',
+              message: '앱이 닫혀 있어도 정류장 접근을 감지하려면 위치를 "항상 허용"으로 설정해주세요.',
               buttonPositive: '설정 열기',
               buttonNegative: '나중에',
             },
@@ -78,38 +91,26 @@ export default function PermissionScreen({ navigation }: Props) {
         }
       }
 
-      // 3. 알림 권한 (notifee — Android 13+, iOS)
+      // 3. 알림 권한 (Android 13+)
       await notifee.requestPermission();
 
       // 4. 정확한 알람 (Android 12+)
       if (Platform.OS === 'android' && parseInt(String(Platform.Version), 10) >= 31) {
         const settings = await notifee.getNotificationSettings();
         if (settings.android?.alarm !== AndroidNotificationSetting.ENABLED) {
-          Alert.alert(
-            '정확한 알람 권한 필요',
-            '출발 시간 정확한 알림을 위해 다음 설정 화면에서 "알람 및 알림" 권한을 허용해주세요.',
-            [{ text: '설정 열기', onPress: () => notifee.openAlarmPermissionSettings() }],
-          );
-          // 설정 열기 후 잠시 대기
-          await new Promise(r => setTimeout(r, 1000));
+          await notifee.openAlarmPermissionSettings();
+          await new Promise(r => setTimeout(r, 800));
         }
       }
 
-      // 5. 배터리 최적화 제외 (Android) — notifee 제공 API
-      if (Platform.OS === 'android') {
-        const powerSettings = await notifee.getPowerManagerInfo();
-        if (powerSettings.activity) {
-          Alert.alert(
-            '배터리 최적화 제외 권장',
-            '절전 모드에서도 하차 알림이 울리려면 배터리 최적화를 해제해주세요.',
-            [
-              { text: '나중에', style: 'cancel' },
-              { text: '설정 열기', onPress: () => notifee.openPowerManagerSettings() },
-            ],
-          );
-          await new Promise(r => setTimeout(r, 500));
-        }
+      // 5. 배터리 최적화 제외 — 앱 직접 요청 다이얼로그 (제조사 설정 화면 아님)
+      if (Platform.OS === 'android' && !isBatteryOptimizationIgnored()) {
+        requestIgnoreBatteryOptimization();
+        await new Promise(r => setTimeout(r, 500));
       }
+
+      // 완료 플래그 저장 → 다음부터 이 화면 스킵
+      storage.set(PERMISSIONS_DONE_KEY, true);
     } catch (e) {
       console.warn('[WAKE]', e);
     } finally {

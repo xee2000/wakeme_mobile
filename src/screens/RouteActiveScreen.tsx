@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -11,20 +11,22 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
-import { useMonitoringStore, saveMonitoringState } from '../store/useMonitoringStore';
-import { RootStackParamList, RouteSegment } from '../types';
-import notifee, { AndroidForegroundServiceType } from '@notifee/react-native';
 import {
-  setupNotificationChannel,
-  sendBusArrivalNotification,
-  requestNotificationPermission,
-  CHANNEL_TRACKING,
-} from '../utils/notifications';
-import { fetchStopsByRouteName, fetchArrivingBuses } from '../api/busApi';
+  useMonitoringStore,
+  saveMonitoringState,
+} from '../store/useMonitoringStore';
+import { RootStackParamList, RouteSegment } from '../types';
+import { requestNotificationPermission } from '../utils/notifications';
+import {
+  startNativeService,
+  isLocationPermissionGranted,
+  scheduleDeparture,
+  cancelDeparture,
+} from '../utils/nativeService';
 import { RestApi } from '../api/RestApi';
 import { useAuthStore } from '../store/useAuthStore';
-
-const FG_NOTIFICATION_ID = 'wakeme_tracking';
+import { supabase } from '../api/supabaseClient';
+import { Waypoint } from '../utils/nativeService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteActive'>;
 
@@ -32,137 +34,166 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
   const { routeId } = route.params;
   const insets = useSafeAreaInsets();
   const routes = useRouteStore(s => s.routes);
-  const user   = useAuthStore(s => s.user);
+  const user = useAuthStore(s => s.user);
   const targetRoute = routes.find(r => r.id === routeId);
 
   const monitoringRouteId = useMonitoringStore(s => s.routeId);
   const status = useMonitoringStore(s => s.status);
-  const distance = useMonitoringStore(s => s.distance);
   const { deactivate } = useMonitoringStore.getState();
 
   const isMonitoring = monitoringRouteId === routeId;
 
   const [targetName, setTargetName] = useState('');
-  const departTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
     if (!targetRoute) return;
-    const lastSeg: RouteSegment = targetRoute.segments[targetRoute.segments.length - 1];
-    const name = lastSeg.mode === 'bus' ? lastSeg.end_stop_name ?? '' : lastSeg.end_station ?? '';
+    const lastSeg: RouteSegment =
+      targetRoute.segments[targetRoute.segments.length - 1];
+    const name =
+      lastSeg.mode === 'bus'
+        ? lastSeg.end_stop_name ?? ''
+        : lastSeg.end_station ?? '';
     setTargetName(name);
   }, [targetRoute?.id]);
 
-  useEffect(() => {
-    return () => {
-      if (departTimerRef.current) clearTimeout(departTimerRef.current);
-    };
-  }, []);
-
   const startMonitoring = async () => {
-    if (!targetRoute) return;
-    const lastSeg: RouteSegment = targetRoute.segments[targetRoute.segments.length - 1];
-    const stopName = lastSeg.mode === 'bus' ? lastSeg.end_stop_name ?? '' : lastSeg.end_station ?? '';
+    if (!targetRoute) {
+      console.log('[WAKE][ERROR] targetRoute 없음');
+      return;
+    }
 
-    await setupNotificationChannel();
+    console.log('[WAKE][ROUTE]', JSON.stringify(targetRoute, null, 2));
+
+    const lastSeg: RouteSegment =
+      targetRoute.segments[targetRoute.segments.length - 1];
+
+    const stopName =
+      lastSeg.mode === 'bus'
+        ? lastSeg.end_stop_name ?? ''
+        : lastSeg.end_station ?? '';
+
     await requestNotificationPermission();
 
+    // ── 권한 ─────────────────────────────
     if (Platform.OS === 'android') {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      );
-      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-        Alert.alert('위치 권한 필요', '하차 알림을 위해 위치 권한이 필요합니다.');
-        return;
-      }
-      if (parseInt(String(Platform.Version), 10) >= 29) {
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+      const alreadyGranted = isLocationPermissionGranted();
+      if (!alreadyGranted) {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         );
-      }
-    }
-
-    const busNos = targetRoute.segments
-      .filter(s => s.mode === 'bus' && s.bus_no)
-      .map(s => s.bus_no as string);
-
-    RestApi.post('/api/notify/start', {
-      userId:      user?.id ?? 'unknown',
-      routeName:   targetRoute.name,
-      busNos,
-      endStopName: stopName,
-      departTime:  targetRoute.depart_time,
-    }).catch(e => console.warn('[WAKE] 서버 로그 전송 실패:', e));
-
-    // ── 첫 번째 버스 구간 정보 ──
-    const firstBusSeg = targetRoute.segments.find(s => s.mode === 'bus' && s.bus_no);
-
-    // ── 하차 정류장 좌표 조회 ──
-    let targetCoord: { latitude: number; longitude: number } | null = null;
-    if (lastSeg.mode === 'bus' && lastSeg.bus_no) {
-      try {
-        const stops = await fetchStopsByRouteName(lastSeg.bus_no);
-        const found = stops.find(
-          s => s.nodeName.includes(stopName) || stopName.includes(s.nodeName),
-        );
-        if (found) {
-          targetCoord = { latitude: found.gpslati, longitude: found.gpslong };
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('위치 권한 필요', '하차 알림을 위해 위치 권한이 필요합니다.');
+          return;
         }
-      } catch (e) {
-        console.warn('[WAKE] 정류장 조회 실패:', e);
+        if (parseInt(String(Platform.Version), 10) >= 29) {
+          await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+          );
+        }
       }
     }
 
-    // ── MMKV에 상태 저장 → registerForegroundService 콜백이 이걸 읽어 GPS 시작 ──
-    if (targetCoord) {
-      saveMonitoringState({
-        routeId,
-        targetCoord,
-        targetName: stopName,
-        departTime: targetRoute.depart_time,
-        busNo: firstBusSeg?.bus_no,
-        startStopId: firstBusSeg?.start_stop_id,
-        startStopName: firstBusSeg?.start_stop_name,
-      });
-      console.log('[WAKE] 모니터링 상태 저장 완료 routeId=%s', routeId);
-    } else {
-      console.warn('[WAKE] targetCoord 없음 — 하차 감지 불가');
-    }
-
-    // ── 출발 시간에 버스 도착 정보 알림 예약 ──
-    if (firstBusSeg?.bus_no) {
-      scheduleBusArrivalAlert(
-        targetRoute.depart_time,
-        firstBusSeg.bus_no,
-        firstBusSeg.start_stop_id,
-        firstBusSeg.start_stop_name ?? '',
-        departTimerRef,
-      );
-    }
-
+    // ── 서버 로그 ─────────────────────────
     try {
-      // 이전 서비스 정리
-      try { await notifee.stopForegroundService(); } catch (_) {}
-
-      // 포그라운드 서비스 알림 표시 → OS가 서비스 시작 → registerForegroundService 콜백 호출 → GPS 시작
-      await notifee.displayNotification({
-        id: FG_NOTIFICATION_ID,
-        title: 'WakeMe 모니터링 중',
-        body: stopName ? `${stopName} 하차 감지 중` : '하차 지점 모니터링 중...',
-        android: {
-          channelId: CHANNEL_TRACKING,
-          asForegroundService: true,
-          foregroundServiceTypes: [AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_LOCATION],
-          smallIcon: 'ic_launcher',
-          color: '#1A73E8',
-          ongoing: true,
-          autoCancel: false,
-          pressAction: { id: 'default' },
-        },
+      await RestApi.post('/api/notify/start', {
+        userId: user?.id ?? 'unknown',
+        routeName: targetRoute.name,
+        endStopName: stopName,
+        departTime: targetRoute.depart_time,
       });
-      console.log('[WAKE] 포그라운드 서비스 알림 표시 완료');
-    } catch (e: any) {
-      console.error('[WAKE] 포그라운드 서비스 시작 실패:', e);
-      Alert.alert('오류', `모니터링 시작 실패\n${e?.message ?? String(e)}`);
+    } catch (e) {
+      console.warn('[WAKE][API] 실패:', e);
+    }
+
+    // 첫 번째 버스 구간 (승차 정류장 출발 알림용)
+    const firstBusSeg = targetRoute.segments.find(s => s.mode === 'bus');
+
+    // ── Supabase에서 전체 구간 하차 지점 좌표 조회 (버스 + 지하철) ──
+    const waypoints: Waypoint[] = [];
+
+    // 각 구간의 하차 지점 수집 (order_index 순서 유지)
+    const allSegs = targetRoute.segments
+      .slice()
+      .sort((a, b) => a.order_index - b.order_index);
+
+    for (let i = 0; i < allSegs.length; i++) {
+      const seg = allSegs[i];
+      const isDestination = i === allSegs.length - 1;
+
+      if (seg.mode === 'bus' && seg.end_stop_name) {
+        const name = seg.end_stop_name;
+        try {
+          const { data } = await supabase
+            .from('bus_stops')
+            .select('lat, lng')
+            .ilike('node_name', `%${name}%`)
+            .limit(1)
+            .maybeSingle();
+
+          if (data) {
+            waypoints.push({ id: `wp_${i}`, lat: data.lat, lng: data.lng, name, type: isDestination ? 'destination' : 'transfer' });
+            console.log('[WAKE][WAYPOINT] 버스', name, data.lat, data.lng);
+          } else {
+            console.warn('[WAKE][WARN] 버스 정류장 미발견:', name);
+          }
+        } catch (e) {
+          console.warn('[WAKE][ERROR] bus_stops 조회 실패:', e);
+        }
+      } else if (seg.mode === 'subway' && seg.end_station) {
+        const name = seg.end_station;
+        try {
+          const { data } = await supabase
+            .from('subway_stations')
+            .select('lat, lng')
+            .eq('station_name', name)
+            .limit(1)
+            .maybeSingle();
+
+          if (data) {
+            waypoints.push({ id: `wp_${i}`, lat: data.lat, lng: data.lng, name, type: isDestination ? 'destination' : 'transfer' });
+            console.log('[WAKE][WAYPOINT] 지하철', name, data.lat, data.lng);
+          } else {
+            console.warn('[WAKE][WARN] 지하철역 미발견:', name);
+          }
+        } catch (e) {
+          console.warn('[WAKE][ERROR] subway_stations 조회 실패:', e);
+        }
+      }
+    }
+
+    if (waypoints.length === 0) {
+      console.warn('[WAKE][CRITICAL] waypoints 없음 → 지오펜스 미등록');
+    }
+
+    // ── 저장 ─────────────────────────────
+    saveMonitoringState({
+      routeId,
+      waypoints,
+      departTime: targetRoute.depart_time,
+      startStopId: firstBusSeg?.start_stop_id,
+      startStopName: firstBusSeg?.start_stop_name,
+    });
+
+    // ── 서비스 시작 ───────────────────────
+    startNativeService();
+
+    useMonitoringStore
+      .getState()
+      .activate(
+        routeId,
+        waypoints,
+        targetRoute.depart_time,
+        firstBusSeg?.start_stop_id,
+        firstBusSeg?.start_stop_name,
+      );
+
+    // ── 출발 시간 알림 예약 (Android AlarmManager) ───
+    if (firstBusSeg?.start_stop_id) {
+      scheduleDeparture(
+        routeId,
+        targetRoute.depart_time,
+        firstBusSeg.start_stop_name ?? '',
+        firstBusSeg.start_stop_id,
+      );
     }
   };
 
@@ -174,10 +205,11 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     );
   }
 
+  const waypoints = useMonitoringStore(s => s.waypoints);
+
   const statusLabel = {
     idle: '🟢 모니터링 중',
-    prepare_sent: '🟡 준비 알림 전송됨',
-    exit_sent: '🔴 하차 알림 전송됨',
+    active: '🟢 모니터링 중',
     done: '✅ 완료',
   };
 
@@ -186,28 +218,32 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       <View style={[styles.container, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.card}>
           <Text style={styles.routeName}>{targetRoute.name}</Text>
-          <Text style={styles.dest}>목적지  {targetName || '–'}</Text>
+          <Text style={styles.dest}>목적지 {targetName || '–'}</Text>
           <Text style={styles.statusText}>{statusLabel[status]}</Text>
 
-          {distance !== null && (
-            <View style={styles.distanceBox}>
-              <Text style={styles.distanceNum}>{distance.toLocaleString()}</Text>
-              <Text style={styles.distanceUnit}>m 남음</Text>
-            </View>
-          )}
-
           <View style={styles.legend}>
-            <Text style={styles.legendItem}>· 500m 이내 → 준비 알림</Text>
-            <Text style={styles.legendItem}>· 200m 이내 → 하차 알림</Text>
+            {waypoints.map((wp, i) => (
+              <Text key={i} style={styles.legendItem}>
+                {wp.type === 'destination' ? '🏁' : '🔄'} {wp.name}
+                {'  '}({wp.type === 'destination' ? '하차' : '환승'} — 500m 이내 알림)
+              </Text>
+            ))}
           </View>
         </View>
 
-        {status === 'exit_sent' ? (
-          <TouchableOpacity style={styles.doneBtn} onPress={() => { deactivate(); navigation.goBack(); }}>
+        {status === 'done' ? (
+          <TouchableOpacity
+            style={styles.doneBtn}
+            onPress={() => {
+              deactivate();
+              navigation.goBack();
+            }}>
             <Text style={styles.doneBtnText}>완료 – 홈으로</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={styles.stopBtn} onPress={deactivate}>
+          <TouchableOpacity
+            style={styles.stopBtn}
+            onPress={() => { cancelDeparture(routeId); deactivate(); }}>
             <Text style={styles.stopBtnText}>알림 중단</Text>
           </TouchableOpacity>
         )}
@@ -219,23 +255,22 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     <View style={[styles.container, { paddingBottom: insets.bottom + 12 }]}>
       <View style={styles.card}>
         <Text style={styles.routeName}>{targetRoute.name}</Text>
-        <Text style={styles.departTime}>출발 시간  {targetRoute.depart_time}</Text>
-        <Text style={styles.dest}>목적지  {targetName || '–'}</Text>
+        <Text style={styles.departTime}>출발 시간 {targetRoute.depart_time}</Text>
+        <Text style={styles.dest}>목적지 {targetName || '–'}</Text>
 
         <View style={styles.divider} />
 
         <Text style={styles.segmentTitle}>구간 정보</Text>
         {targetRoute.segments.map((seg, i) => (
           <View key={i} style={styles.segmentRow}>
-            <Text style={styles.segmentBadge}>{seg.mode === 'bus' ? '🚌' : '🚇'}</Text>
+            <Text style={styles.segmentBadge}>
+              {seg.mode === 'bus' ? '🚌' : '🚇'}
+            </Text>
             <View style={{ flex: 1 }}>
               {seg.mode === 'bus' ? (
-                <>
-                  <Text style={styles.segmentMain}>{seg.bus_no ?? ''} 번</Text>
-                  <Text style={styles.segmentSub}>
-                    {seg.start_stop_name || '–'} → {seg.end_stop_name || '–'}
-                  </Text>
-                </>
+                <Text style={styles.segmentSub}>
+                  {seg.start_stop_name || '–'} → {seg.end_stop_name || '–'}
+                </Text>
               ) : (
                 <>
                   <Text style={styles.segmentMain}>{seg.line_name ?? ''}</Text>
@@ -262,56 +297,12 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
   );
 }
 
-function scheduleBusArrivalAlert(
-  departTime: string,
-  busNo: string,
-  startStopId: string | undefined,
-  startStopName: string,
-  timerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>,
-) {
-  const [dHour, dMin] = departTime.split(':').map(Number);
-  const now = new Date();
-  const departAt = new Date();
-  departAt.setHours(dHour, dMin, 0, 0);
-
-  const msUntilDepart = departAt.getTime() - now.getTime();
-  if (msUntilDepart <= 0 || msUntilDepart > 4 * 60 * 60 * 1000) return;
-
-  timerRef.current = setTimeout(async () => {
-    try {
-      let arrivalMin: number | null = null;
-      if (startStopId) {
-        const buses = await fetchArrivingBuses(startStopId);
-        const myBus = buses.find((b: any) => {
-          const rNo = String(b.routeno ?? b.routeNo ?? b.routeId ?? '');
-          return rNo === busNo;
-        });
-        if (myBus) {
-          const arrSec = myBus.arrtime ?? myBus.arrivalTime ?? myBus.predictTime1 ?? null;
-          if (arrSec != null) arrivalMin = Math.ceil(Number(arrSec) / 60);
-        }
-      }
-      await sendBusArrivalNotification(busNo, arrivalMin, startStopName);
-    } catch (e) {
-      console.warn('[WAKE] 버스 도착 정보 조회 실패:', e);
-      await sendBusArrivalNotification(busNo, null, startStopName).catch(() => {});
-    }
-  }, msUntilDepart);
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F5F7FA', padding: 20 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   card: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-    marginBottom: 16,
+    flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 24,
+    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3, marginBottom: 16,
   },
   routeName: { fontSize: 22, fontWeight: '800', color: '#1A73E8', marginBottom: 6 },
   departTime: { fontSize: 14, color: '#888', marginBottom: 4 },
@@ -323,44 +314,27 @@ const styles = StyleSheet.create({
   segmentMain: { fontSize: 15, fontWeight: '700', color: '#222' },
   segmentSub: { fontSize: 13, color: '#777', marginTop: 2 },
   statusText: { fontSize: 18, fontWeight: '700', color: '#333', marginBottom: 24, marginTop: 8 },
-  distanceBox: { alignItems: 'center', marginBottom: 24 },
-  distanceNum: { fontSize: 64, fontWeight: '900', color: '#1A73E8' },
-  distanceUnit: { fontSize: 20, color: '#555', marginTop: -8 },
   legend: { marginTop: 8 },
   legendItem: { fontSize: 13, color: '#999', textAlign: 'center', lineHeight: 22 },
   startBtn: {
-    height: 52,
-    backgroundColor: '#1A73E8',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 10,
+    height: 52, backgroundColor: '#1A73E8', borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 10,
   },
   startBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   editBtn: {
-    height: 52,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: '#1A73E8',
+    height: 52, backgroundColor: '#fff', borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: '#1A73E8',
   },
   editBtnText: { color: '#1A73E8', fontWeight: '700', fontSize: 16 },
   stopBtn: {
-    height: 52,
-    backgroundColor: '#E53935',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 52, backgroundColor: '#E53935', borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
   },
   stopBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   doneBtn: {
-    height: 52,
-    backgroundColor: '#34A853',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 52, backgroundColor: '#34A853', borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
   },
   doneBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });

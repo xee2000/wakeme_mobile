@@ -33,7 +33,6 @@ type Props = NativeStackScreenProps<RootStackParamList, 'RouteRegister'>;
 const EMPTY_SEGMENT: Omit<RouteSegment, 'id' | 'route_id'> = {
   order_index: 0,
   mode: 'bus',
-  bus_no: '',
   start_stop_name: '',
   start_stop_id: '',
   end_stop_name: '',
@@ -163,22 +162,17 @@ function TimePickerModal({
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 지도 정류장 선택 모달
+// 지도 정류장 선택 모달 (버스번호 선택 없이 정류장만 선택)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-interface RouteInfo { routeId: string; routeNo: string; routeType: string; startStop: string; endStop: string; }
-
 function MapStopSelectModal({
   visible,
   title,
-  skipRouteSelection,
   onSelect,
   onClose,
 }: {
   visible: boolean;
   title: string;
-  /** 하차 정류장처럼 노선 선택이 필요 없을 때 true */
-  skipRouteSelection?: boolean;
-  onSelect: (stop: BusStop, routeNo?: string) => void;
+  onSelect: (stop: BusStop) => void;
   onClose: () => void;
 }) {
   const mapRef = useRef<NaverMapViewRef>(null);
@@ -188,16 +182,13 @@ function MapStopSelectModal({
   const [userLat, setUserLat] = useState<number | null>(null);
   const [userLng, setUserLng] = useState<number | null>(null);
 
-  // 검색
+  const [stopRoutes, setStopRoutes] = useState<{ routeNo: string; endStop: string }[]>([]);
+  const [routesLoading, setRoutesLoading] = useState(false);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<BusStop[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // 노선 선택 단계
-  const [routes, setRoutes] = useState<RouteInfo[]>([]);
-  const [routeLoading, setRouteLoading] = useState(false);
-  const [showRoutes, setShowRoutes] = useState(false);
 
   const handleSearchChange = useCallback((text: string) => {
     setSearchQuery(text);
@@ -214,27 +205,23 @@ function MapStopSelectModal({
     }, 400);
   }, []);
 
-  // 모달 열릴 때 위치 추적 활성화 (Naver Maps SDK 내부 GPS — react-native-geolocation 미사용)
   useEffect(() => {
     if (!visible) {
       setSelectedStop(null);
       setNearbyStops([]);
-      setShowRoutes(false);
-      setRoutes([]);
       setUserLat(null);
       setUserLng(null);
       setSearchQuery('');
       setSearchResults([]);
+      setStopRoutes([]);
       return;
     }
-    // 지도가 렌더된 후 Follow 모드 시작
     const timer = setTimeout(() => {
       mapRef.current?.setLocationTrackingMode('Follow');
     }, 400);
     return () => clearTimeout(timer);
   }, [visible]);
 
-  // 위치 추적으로 카메라가 이동하면 주변 정류장 조회
   const handleCameraChanged = useCallback(
     async (params: { latitude: number; longitude: number; reason: string }) => {
       if (params.reason !== 'Location') return;
@@ -252,50 +239,30 @@ function MapStopSelectModal({
     [],
   );
 
-  // 마커 탭 → 정류장 선택
   const handleMarkerTap = (stop: BusStop) => {
     setSelectedStop(stop);
-    setShowRoutes(false);
-    setRoutes([]);
+    setStopRoutes([]);
     mapRef.current?.animateCameraTo({
       latitude: stop.gpslati,
       longitude: stop.gpslong,
       zoom: 17,
       duration: 400,
     });
+    setRoutesLoading(true);
+    fetchRoutesByStop(stop.nodeId)
+      .then(routes => setStopRoutes(routes.map(r => ({ routeNo: r.routeNo, endStop: r.endStop }))))
+      .catch(() => {})
+      .finally(() => setRoutesLoading(false));
   };
 
-  // 재탐색 버튼 → 다시 Follow 모드
   const handleRelocate = () => {
     mapRef.current?.setLocationTrackingMode('Follow');
   };
 
-  // "등록" 버튼 → 노선 조회 (하차인 경우 바로 완료)
-  const handleRegister = async () => {
+  const handleSelect = () => {
     if (!selectedStop) return;
-    if (skipRouteSelection) {
-      onSelect(selectedStop);
-      onClose();
-      return;
-    }
-    setRouteLoading(true);
-    setShowRoutes(true);
-    try {
-      const result = await fetchRoutesByStop(selectedStop.nodeId);
-      setRoutes(result);
-    } finally {
-      setRouteLoading(false);
-    }
-  };
-
-  // 노선 선택 완료
-  const handleRoutePress = (route: RouteInfo) => {
-    if (selectedStop) { onSelect(selectedStop, route.routeNo); onClose(); }
-  };
-
-  // 정류장만 선택
-  const handleSelectStopOnly = () => {
-    if (selectedStop) { onSelect(selectedStop); onClose(); }
+    onSelect(selectedStop);
+    onClose();
   };
 
   const isSearching = searchQuery.trim().length > 0;
@@ -303,40 +270,31 @@ function MapStopSelectModal({
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={ms.container}>
-        {/* 헤더 */}
         <View style={ms.header}>
-          <TouchableOpacity
-            onPress={showRoutes ? () => setShowRoutes(false) : onClose}
-            style={ms.closeBtn}>
-            <Text style={ms.closeText}>{showRoutes ? '←' : '✕'}</Text>
+          <TouchableOpacity onPress={onClose} style={ms.closeBtn}>
+            <Text style={ms.closeText}>✕</Text>
           </TouchableOpacity>
-          <Text style={ms.headerTitle}>
-            {showRoutes && selectedStop
-              ? `${selectedStop.nodeName} 노선 선택`
-              : title}
-          </Text>
+          <Text style={ms.headerTitle}>{title}</Text>
           <TouchableOpacity onPress={handleRelocate} style={ms.relocateBtn}>
             <Text style={ms.relocateText}>📍</Text>
           </TouchableOpacity>
         </View>
 
         {/* 검색창 */}
-        {!showRoutes && (
-          <View style={ms.searchBar}>
-            <TextInput
-              style={ms.searchInput}
-              placeholder="정류장 이름으로 검색..."
-              value={searchQuery}
-              onChangeText={handleSearchChange}
-              returnKeyType="search"
-              clearButtonMode="while-editing"
-            />
-            {searchLoading && <ActivityIndicator size="small" color="#1A73E8" style={{ marginLeft: 8 }} />}
-          </View>
-        )}
+        <View style={ms.searchBar}>
+          <TextInput
+            style={ms.searchInput}
+            placeholder="정류장 이름으로 검색..."
+            value={searchQuery}
+            onChangeText={handleSearchChange}
+            returnKeyType="search"
+            clearButtonMode="while-editing"
+          />
+          {searchLoading && <ActivityIndicator size="small" color="#1A73E8" style={{ marginLeft: 8 }} />}
+        </View>
 
-        {/* 검색 결과 목록 */}
-        {!showRoutes && isSearching && (
+        {/* 검색 결과 */}
+        {isSearching && (
           <FlatList
             data={searchResults}
             keyExtractor={(item, i) => `${item.nodeId}-${i}`}
@@ -368,180 +326,100 @@ function MapStopSelectModal({
           />
         )}
 
-        {!showRoutes ? (
-          <View style={{ flex: 1, display: isSearching ? 'none' : 'flex' }}>
-            {/* 네이버 지도 — isShowLocationButton=true: SDK 내부 GPS 처리 */}
-            <NaverMapView
-              ref={mapRef}
-              style={ms.map}
-              initialCamera={{ latitude: 36.3504, longitude: 127.3845, zoom: 14 }}
-              isShowLocationButton={true}
-              isShowZoomControls={true}
-              isShowCompass={false}
-              onCameraChanged={handleCameraChanged}
-              onInitialized={() => console.log('[WAKE] NaverMap 초기화 성공')}
-              onOptionChanged={() => console.log('[WAKE] NaverMap 옵션 변경됨')}>
+        <View style={{ flex: 1, display: isSearching ? 'none' : 'flex' }}>
+          <NaverMapView
+            ref={mapRef}
+            style={ms.map}
+            initialCamera={{ latitude: 36.3504, longitude: 127.3845, zoom: 14 }}
+            isShowLocationButton={true}
+            isShowZoomControls={true}
+            isShowCompass={false}
+            onCameraChanged={handleCameraChanged}
+            onInitialized={() => console.log('[WAKE] NaverMap 초기화 성공')}
+            onOptionChanged={() => console.log('[WAKE] NaverMap 옵션 변경됨')}>
 
-              {/* 현재 위치 반경 표시 */}
-              {userLat !== null && userLng !== null && (
-                <NaverMapCircleOverlay
-                  latitude={userLat}
-                  longitude={userLng}
-                  radius={400}
-                  color="rgba(26,115,232,0.06)"
-                  outlineColor="rgba(26,115,232,0.3)"
-                  outlineWidth={1}
-                />
-              )}
+            {userLat !== null && userLng !== null && (
+              <NaverMapCircleOverlay
+                latitude={userLat}
+                longitude={userLng}
+                radius={400}
+                color="rgba(26,115,232,0.06)"
+                outlineColor="rgba(26,115,232,0.3)"
+                outlineWidth={1}
+              />
+            )}
 
-              {/* 정류장 마커 */}
-              {nearbyStops.map(stop => (
-                <NaverMapMarkerOverlay
-                  key={stop.nodeId}
-                  latitude={stop.gpslati}
-                  longitude={stop.gpslong}
-                  caption={{ text: stop.nodeName, textSize: 11, color: '#222' }}
-                  image={
-                    selectedStop?.nodeId === stop.nodeId
-                      ? { symbol: 'red' }
-                      : { symbol: 'blue' }
-                  }
-                  width={32}
-                  height={40}
-                  onTap={() => handleMarkerTap(stop)}
-                />
-              ))}
-            </NaverMapView>
+            {nearbyStops.map(stop => (
+              <NaverMapMarkerOverlay
+                key={stop.nodeId}
+                latitude={stop.gpslati}
+                longitude={stop.gpslong}
+                caption={{ text: stop.nodeName, textSize: 11, color: '#222' }}
+                image={
+                  selectedStop?.nodeId === stop.nodeId
+                    ? { symbol: 'red' }
+                    : { symbol: 'blue' }
+                }
+                width={32}
+                height={40}
+                onTap={() => handleMarkerTap(stop)}
+              />
+            ))}
+          </NaverMapView>
 
-            {/* 선택된 정류장 바텀 카드 */}
-            {selectedStop ? (
-              <View style={ms.bottomCard}>
+          {selectedStop ? (
+            <View style={ms.bottomCard}>
+              {/* 정류장 헤더 */}
+              <View style={ms.stopCardHeader}>
                 <View style={ms.stopCardInfo}>
                   <Text style={ms.stopCardName}>{selectedStop.nodeName}</Text>
                   <Text style={ms.stopCardDist}>
                     {selectedStop.distance != null ? `📍 ${selectedStop.distance}m` : `코드: ${selectedStop.nodeId}`}
                   </Text>
                 </View>
-                <TouchableOpacity style={ms.registerBtn} onPress={handleRegister}>
-                  <Text style={ms.registerBtnText}>
-                    {skipRouteSelection ? '선택' : '등록'}
-                  </Text>
+                <TouchableOpacity style={ms.registerBtn} onPress={handleSelect}>
+                  <Text style={ms.registerBtnText}>선택</Text>
                 </TouchableOpacity>
               </View>
-            ) : (
-              <View style={ms.hintBar}>
-                <Text style={ms.hintText}>
-                  {loadingStops
-                    ? '주변 정류장 불러오는 중...'
-                    : nearbyStops.length > 0
-                    ? `주변 정류장 ${nearbyStops.length}개 • 마커를 눌러 선택`
-                    : '지도 우측 📍 버튼으로 내 위치를 찾아보세요'}
-                </Text>
-              </View>
-            )}
-          </View>
-        ) : (
-          /* ── 노선 선택 단계 ── */
-          <>
-            <View style={ms.stopInfoBar}>
-              <Text style={ms.stopInfoText}>🚏 {selectedStop?.nodeName}</Text>
-              <TouchableOpacity onPress={handleSelectStopOnly}>
-                <Text style={ms.stopOnlyText}>노선 없이 선택</Text>
-              </TouchableOpacity>
-            </View>
 
-            {routeLoading ? (
-              <View style={ms.center}>
-                <ActivityIndicator size="large" color="#1A73E8" />
-                <Text style={ms.loadingText}>노선 조회 중...</Text>
-              </View>
-            ) : routes.length === 0 ? (
-              <View style={ms.center}>
-                <Text style={ms.emptyText}>이 정류장의 노선 정보를{'\n'}불러올 수 없습니다.</Text>
-                <TouchableOpacity style={ms.fallbackBtn} onPress={handleSelectStopOnly}>
-                  <Text style={ms.fallbackBtnText}>정류장만 선택하기</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <FlatList
-                data={routes}
-                keyExtractor={(item, i) => `${item.routeId}-${i}`}
-                contentContainerStyle={{ padding: 16 }}
-                ListHeaderComponent={
-                  <Text style={ms.routeCount}>총 {routes.length}개 노선 경유</Text>
-                }
-                renderItem={({ item }) => (
-                  <TouchableOpacity style={ms.routeItem} onPress={() => handleRoutePress(item)}>
-                    <View style={ms.routeNoBox}>
-                      <Text style={ms.routeNo}>{item.routeNo}</Text>
-                      {item.routeType ? <Text style={ms.routeNoType}>{item.routeType}</Text> : null}
+              {/* 경유 버스 목록 */}
+              {routesLoading ? (
+                <View style={{ paddingVertical: 10, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color="#1A73E8" />
+                </View>
+              ) : stopRoutes.length > 0 ? (
+                <ScrollView
+                  style={ms.routeList}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ gap: 8, paddingVertical: 8, paddingHorizontal: 2 }}>
+                  {stopRoutes.map((r, i) => (
+                    <View key={i} style={ms.routeChip}>
+                      <Text style={ms.routeChipNo}>{r.routeNo}번</Text>
+                      {r.endStop ? (
+                        <Text style={ms.routeChipDest}>{r.endStop}방면</Text>
+                      ) : null}
                     </View>
-                    <View style={{ flex: 1 }}>
-                      {item.endStop ? (
-                        <>
-                          <Text style={ms.routeDestLabel}>방향</Text>
-                          <Text style={ms.routeDest}>{item.endStop}</Text>
-                          {item.startStop ? (
-                            <Text style={ms.routeDir}>{item.startStop} 출발</Text>
-                          ) : null}
-                        </>
-                      ) : (
-                        <Text style={ms.routeDir}>노선 선택</Text>
-                      )}
-                    </View>
-                    <Text style={ms.selectArrow}>›</Text>
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-          </>
-        )}
+                  ))}
+                </ScrollView>
+              ) : (
+                <Text style={ms.noRouteText}>노선 정보를 불러올 수 없습니다</Text>
+              )}
+            </View>
+          ) : (
+            <View style={ms.hintBar}>
+              <Text style={ms.hintText}>
+                {loadingStops
+                  ? '주변 정류장 불러오는 중...'
+                  : nearbyStops.length > 0
+                  ? `주변 정류장 ${nearbyStops.length}개 • 마커를 눌러 선택`
+                  : '지도 우측 📍 버튼으로 내 위치를 찾아보세요'}
+              </Text>
+            </View>
+          )}
+        </View>
       </View>
     </Modal>
-  );
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 버스 번호 태그 입력
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function BusNoTagInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [input, setInput] = useState('');
-  const tags = value ? value.split(',').map(s => s.trim()).filter(Boolean) : [];
-
-  const addTag = () => {
-    const trimmed = input.trim();
-    if (!trimmed) return;
-    if (!tags.includes(trimmed)) onChange([...tags, trimmed].join(','));
-    setInput('');
-  };
-
-  const removeTag = (tag: string) => onChange(tags.filter(t => t !== tag).join(','));
-
-  return (
-    <View>
-      <View style={styles.tagRow}>
-        {tags.map(tag => (
-          <TouchableOpacity key={tag} style={styles.tag} onPress={() => removeTag(tag)}>
-            <Text style={styles.tagText}>{tag}</Text>
-            <Text style={styles.tagRemove}> ✕</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <View style={styles.tagInputRow}>
-        <TextInput
-          style={[styles.input, { flex: 1, marginBottom: 0 }]}
-          placeholder="번호 입력 후 + 버튼"
-          value={input}
-          onChangeText={setInput}
-          keyboardType="numeric"
-          onSubmitEditing={addTag}
-          returnKeyType="done"
-        />
-        <TouchableOpacity style={styles.tagAddBtn} onPress={addTag}>
-          <Text style={styles.tagAddText}>+</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
   );
 }
 
@@ -609,10 +487,8 @@ function SubwayStationPickerModal({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={ss.overlay}>
         <View style={ss.sheet}>
-          {/* 핸들 */}
           <View style={ss.handle} />
 
-          {/* 헤더 */}
           <View style={ss.header}>
             <TouchableOpacity onPress={onClose} style={ss.closeBtn}>
               <Text style={ss.closeText}>✕</Text>
@@ -621,7 +497,6 @@ function SubwayStationPickerModal({
             <View style={{ width: 36 }} />
           </View>
 
-          {/* 검색창 */}
           <View style={ss.searchWrap}>
             <TextInput
               style={ss.searchInput}
@@ -632,7 +507,6 @@ function SubwayStationPickerModal({
             />
           </View>
 
-          {/* 역 목록 */}
           {loading ? (
             <View style={ss.center}>
               <ActivityIndicator size="large" color="#F5A200" />
@@ -702,7 +576,6 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
       existingRoute.segments.map(seg => ({
         order_index: seg.order_index,
         mode: seg.mode,
-        bus_no: seg.bus_no,
         start_stop_name: seg.start_stop_name,
         start_stop_id: seg.start_stop_id,
         end_stop_name: seg.end_stop_name,
@@ -755,7 +628,7 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
               order_index: seg.order_index,
               mode,
               ...(mode === 'bus'
-                ? { bus_no: '', start_stop_name: '', start_stop_id: '', end_stop_name: '', end_stop_id: '' }
+                ? { start_stop_name: '', start_stop_id: '', end_stop_name: '', end_stop_id: '' }
                 : { line_name: '', start_station: '', end_station: '' }),
             }
           : seg,
@@ -767,19 +640,17 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
     setStopModal({ visible: true, segIndex, field });
   };
 
-  const handleStopSelect = (stop: BusStop, routeNo?: string) => {
+  const handleStopSelect = (stop: BusStop) => {
     const { segIndex, field } = stopModal;
     if (field === 'start') {
       updateSegment(segIndex, {
         start_stop_name: stop.nodeName,
         start_stop_id: stop.nodeId,
-        ...(routeNo ? { bus_no: routeNo } : {}),
       });
     } else {
       updateSegment(segIndex, {
         end_stop_name: stop.nodeName,
         end_stop_id: stop.nodeId,
-        ...(routeNo ? { bus_no: routeNo } : {}),
       });
     }
   };
@@ -798,9 +669,6 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
     log(`handleSave 호출됨 user=${user?.id ?? 'null'} editingRouteId=${editingRouteId ?? 'none'}`);
     if (!routeName.trim()) { Alert.alert('알림', '경로 이름을 입력해주세요.'); return; }
     for (const seg of segments) {
-      if (seg.mode === 'bus' && !seg.bus_no?.trim()) {
-        Alert.alert('알림', '버스 번호를 입력해주세요.'); return;
-      }
       if (seg.mode === 'bus' && !seg.end_stop_name?.trim()) {
         Alert.alert('알림', '하차 정류장을 선택해주세요.'); return;
       }
@@ -878,13 +746,6 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
 
             {seg.mode === 'bus' ? (
               <>
-                {/* 버스 번호 태그 입력 */}
-                <Text style={styles.fieldLabel}>버스 번호 (여러 개 가능)</Text>
-                <BusNoTagInput
-                  value={seg.bus_no ?? ''}
-                  onChange={v => updateSegment(index, { bus_no: v })}
-                />
-
                 <Text style={styles.fieldLabel}>승차 정류장</Text>
                 <TouchableOpacity
                   style={styles.stopPicker}
@@ -907,7 +768,6 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
               </>
             ) : (
               <>
-                {/* 대전 지하철 호선 선택 */}
                 <Text style={styles.fieldLabel}>호선 선택</Text>
                 <SubwayLinePicker
                   value={seg.line_name ?? ''}
@@ -973,7 +833,6 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
       <MapStopSelectModal
         visible={stopModal.visible}
         title={stopModal.field === 'start' ? '승차 정류장 선택' : '하차 정류장 선택'}
-        skipRouteSelection={stopModal.field === 'end'}
         onSelect={handleStopSelect}
         onClose={() => setStopModal(s => ({ ...s, visible: false }))}
       />
@@ -982,9 +841,7 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
       <SubwayStationPickerModal
         visible={subwayPicker.visible}
         title={subwayPicker.field === 'start' ? '승차 역 선택' : '하차 역 선택'}
-        line={
-          segments[subwayPicker.segIndex]?.line_name ?? '1호선'
-        }
+        line={segments[subwayPicker.segIndex]?.line_name ?? '1호선'}
         onSelect={handleSubwayStationSelect}
         onClose={() => setSubwayPicker(s => ({ ...s, visible: false }))}
       />
@@ -1040,13 +897,6 @@ const styles = StyleSheet.create({
   addSegBtnText: { color: '#1A73E8', fontWeight: '600', fontSize: 14 },
   saveBtn: { height: 52, backgroundColor: '#1A73E8', borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
-  tag: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A73E8', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
-  tagText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  tagRemove: { color: 'rgba(255,255,255,0.8)', fontSize: 12 },
-  tagInputRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
-  tagAddBtn: { width: 46, height: 46, backgroundColor: '#1A73E8', borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  tagAddText: { color: '#fff', fontSize: 22, fontWeight: '700' },
   lineRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   lineBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 2 },
   lineBtnText: { fontSize: 14, fontWeight: '700', color: '#333' },
@@ -1142,11 +992,11 @@ const ms = StyleSheet.create({
   },
   hintText: { fontSize: 13, color: '#888', textAlign: 'center' },
   bottomCard: {
-    backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 14,
+    backgroundColor: '#fff', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10,
     borderTopWidth: 1, borderTopColor: '#EEE',
-    flexDirection: 'row', alignItems: 'center', gap: 12,
     shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 8, elevation: 6,
   },
+  stopCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
   stopCardInfo: { flex: 1 },
   stopCardName: { fontSize: 16, fontWeight: '700', color: '#222' },
   stopCardDist: { fontSize: 12, color: '#888', marginTop: 2 },
@@ -1155,37 +1005,16 @@ const ms = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12,
   },
   registerBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  stopInfoBar: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#E8F0FE', paddingHorizontal: 16, paddingVertical: 12,
+  routeList: { maxHeight: 80 },
+  routeChip: {
+    backgroundColor: '#F0F4FF', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+    alignItems: 'center', borderWidth: 1, borderColor: '#C5D5F5',
   },
-  stopInfoText: { fontSize: 14, fontWeight: '700', color: '#1A73E8', flex: 1 },
-  stopOnlyText: { fontSize: 12, color: '#888', textDecorationLine: 'underline' },
+  routeChipNo: { fontSize: 15, fontWeight: '800', color: '#1A73E8' },
+  routeChipDest: { fontSize: 11, color: '#666', marginTop: 2 },
+  noRouteText: { fontSize: 12, color: '#aaa', paddingVertical: 8 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40 },
-  loadingText: { marginTop: 12, color: '#888', fontSize: 14 },
-  emptyText: { color: '#aaa', fontSize: 14, textAlign: 'center', lineHeight: 22 },
-  routeCount: { fontSize: 13, color: '#888', marginBottom: 10 },
-  routeItem: {
-    backgroundColor: '#fff', borderRadius: 10, padding: 14, marginBottom: 10,
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4, elevation: 2,
-  },
-  routeNoBox: {
-    minWidth: 56, paddingHorizontal: 10, height: 40, backgroundColor: '#1A73E8',
-    borderRadius: 8, alignItems: 'center', justifyContent: 'center',
-  },
-  routeNo: { fontSize: 18, fontWeight: '900', color: '#fff' },
-  routeNoType: { fontSize: 10, color: 'rgba(255,255,255,0.8)', marginTop: 2 },
-  routeDestLabel: { fontSize: 10, color: '#aaa', marginBottom: 2 },
-  routeDest: { fontSize: 15, fontWeight: '700', color: '#222' },
-  routeDir: { fontSize: 12, color: '#888', marginTop: 2 },
-  routeType: { fontSize: 11, color: '#aaa', marginTop: 2 },
-  selectArrow: { fontSize: 24, color: '#1A73E8', fontWeight: '700' },
-  fallbackBtn: {
-    marginTop: 16, paddingHorizontal: 24, paddingVertical: 12,
-    backgroundColor: '#1A73E8', borderRadius: 10,
-  },
-  fallbackBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  emptyText: { color: '#aaa', fontSize: 14, textAlign: 'center' },
   searchBar: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 8,

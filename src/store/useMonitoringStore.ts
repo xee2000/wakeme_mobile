@@ -1,23 +1,16 @@
 import { create } from 'zustand';
-import Geolocation from '@react-native-community/geolocation';
-import notifee from '@notifee/react-native';
 import { MMKV } from 'react-native-mmkv';
-import { Coordinate } from '../utils/geofence';
+import { stopNativeService, Waypoint } from '../utils/nativeService';
 
-export type MonitoringStatus = 'idle' | 'prepare_sent' | 'exit_sent' | 'done';
+export type MonitoringStatus = 'idle' | 'active' | 'done';
 
 const storage = new MMKV({ id: 'monitoring' });
 const PERSIST_KEY = 'wakeme_monitoring_state';
 
-// 컴포넌트 생명주기 밖에서 watchId 보존
-let _watchId: number | null = null;
-
 interface PersistedMonitoringState {
   routeId: string;
-  targetCoord: Coordinate;
-  targetName: string;
-  departTime: string; // "HH:MM"
-  busNo?: string;
+  waypoints: Waypoint[];
+  departTime: string;
   startStopId?: string;
   startStopName?: string;
 }
@@ -25,26 +18,19 @@ interface PersistedMonitoringState {
 interface MonitoringState {
   routeId: string | null;
   status: MonitoringStatus;
-  distance: number | null;
-  targetCoord: Coordinate | null;
-  targetName: string;
+  waypoints: Waypoint[];
   departTime: string | null;
-  busNo: string | null;
   startStopId: string | null;
   startStopName: string | null;
 
   activate: (
     routeId: string,
-    targetCoord: Coordinate | null,
-    targetName: string,
-    watchId: number,
+    waypoints: Waypoint[],
     departTime: string,
-    busNo?: string,
     startStopId?: string,
     startStopName?: string,
   ) => void;
   deactivate: () => void;
-  setDistance: (distance: number) => void;
   setStatus: (status: MonitoringStatus) => void;
 }
 
@@ -65,32 +51,34 @@ export function clearMonitoringState() {
 export const useMonitoringStore = create<MonitoringState>((set) => ({
   routeId: null,
   status: 'idle',
-  distance: null,
-  targetCoord: null,
-  targetName: '',
+  waypoints: [],
   departTime: null,
-  busNo: null,
   startStopId: null,
   startStopName: null,
 
-  activate: (routeId, targetCoord, targetName, watchId, departTime, busNo, startStopId, startStopName) => {
-    _watchId = watchId;
-    set({ routeId, targetCoord, targetName, status: 'idle', distance: null, departTime, busNo: busNo ?? null, startStopId: startStopId ?? null, startStopName: startStopName ?? null });
-    if (targetCoord) {
-      saveMonitoringState({ routeId, targetCoord, targetName, departTime, busNo, startStopId, startStopName });
-    }
+  activate: (routeId, waypoints, departTime, startStopId, startStopName) => {
+    set({
+      routeId,
+      waypoints,
+      status: 'active',
+      departTime,
+      startStopId: startStopId ?? null,
+      startStopName: startStopName ?? null,
+    });
   },
 
   deactivate: () => {
-    if (_watchId !== null) {
-      Geolocation.clearWatch(_watchId);
-      _watchId = null;
-    }
-    notifee.stopForegroundService();
+    stopNativeService();
     clearMonitoringState();
-    set({ routeId: null, status: 'idle', distance: null, targetCoord: null, departTime: null, busNo: null, startStopId: null, startStopName: null });
+    set({
+      routeId: null,
+      status: 'idle',
+      waypoints: [],
+      departTime: null,
+      startStopId: null,
+      startStopName: null,
+    });
   },
 
-  setDistance: (distance) => set({ distance }),
   setStatus: (status) => set({ status }),
 }));

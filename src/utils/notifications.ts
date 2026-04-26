@@ -4,6 +4,7 @@ import notifee, {
   TriggerType,
   RepeatFrequency,
 } from '@notifee/react-native';
+// TriggerType, RepeatFrequency — scheduleDepartureNotification 에서 사용
 
 // 포그라운드 서비스 유지용 (낮은 우선순위 — 조용히 상단바에만 표시)
 export const CHANNEL_TRACKING = 'wakeme-tracking';
@@ -53,7 +54,7 @@ export async function sendExitNotification(stopName: string): Promise<void> {
       channelId: CHANNEL_ALERT,
       importance: AndroidImportance.HIGH,
       pressAction: { id: 'default' },
-      vibrationPattern: [0, 500, 200, 500],
+      vibrationPattern: [100, 500, 200, 500],
     },
     ios: {
       sound: 'default',
@@ -83,7 +84,7 @@ export async function sendBusArrivalNotification(
       channelId: CHANNEL_ALERT,
       importance: AndroidImportance.HIGH,
       pressAction: { id: 'default' },
-      vibrationPattern: [0, 300, 200, 300],
+      vibrationPattern: [100, 300, 200, 300],
     },
     ios: {
       sound: 'default',
@@ -122,7 +123,7 @@ export async function scheduleDepartureNotification(
         channelId: CHANNEL_ALERT,
         importance: AndroidImportance.HIGH,
         pressAction: { id: 'default' },
-        vibrationPattern: [0, 300, 200, 300],
+        vibrationPattern: [100, 300, 200, 300],
       },
     },
     {
@@ -138,3 +139,4 @@ export async function scheduleDepartureNotification(
 export async function cancelDepartureNotification(routeId: string): Promise<void> {
   await notifee.cancelNotification(`departure-${routeId}`);
 }
+

@@ -83,7 +83,7 @@ export default function RouteListScreen({ navigation }: Props) {
                   <Text key={i} style={styles.segText}>
                     {i + 1}.{' '}
                     {seg.mode === 'bus'
-                      ? `🚌 ${seg.bus_no}번 버스`
+                      ? `🚌 버스`
                       : `🚇 ${seg.line_name}`}
                     {' ('}
                     {seg.start_stop_name ?? seg.start_station} →{' '}

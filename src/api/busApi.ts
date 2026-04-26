@@ -70,7 +70,7 @@ export async function fetchRoutesByStop(stopId: string): Promise<{
   }
 }
 
-/** 정류장 ID로 도착 예정 버스 조회 */
+/** 정류장 ID로 도착 예정 버스 목록 조회 */
 export async function fetchArrivingBuses(nodeId: string): Promise<any[]> {
   try {
     return await RestApi.get<any[]>(`/api/bus/arriving?nodeId=${encodeURIComponent(nodeId)}`);
