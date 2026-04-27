@@ -92,6 +92,7 @@ export async function fetchBusPositions(routeId: string): Promise<any[]> {
 
 /** 지하철 역 목록 조회 */
 export interface SubwayStation {
+  stationId: string;
   line: string;
   seq: number;
   name: string;

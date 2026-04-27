@@ -14,6 +14,7 @@ import { logout as kakaoLogout } from '@react-native-kakao/user';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList } from '../types';
+import { ensureServiceRunning } from '../utils/nativeService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
@@ -26,6 +27,8 @@ export default function HomeScreen({ navigation }: Props) {
   useFocusEffect(
     useCallback(() => {
       if (user) loadRoutes(user.id);
+      // 앱 포그라운드 복귀 시 서비스가 죽어있으면 재시작
+      ensureServiceRunning();
     }, [user]),
   );
 

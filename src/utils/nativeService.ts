@@ -15,12 +15,32 @@ export function startNativeService(): void {
   if (Platform.OS !== 'android') return;
   const state = loadMonitoringState();
   if (!state || !state.waypoints?.length) return;
-  WakeMeService?.start(state.routeId, JSON.stringify(state.waypoints));
+  WakeMeService?.start(
+    state.routeId,
+    JSON.stringify(state.waypoints),
+    state.departTime ?? '',   // 출발시간 ±2시간 체크용
+  );
 }
 
 export function stopNativeService(): void {
   if (Platform.OS !== 'android') return;
   WakeMeService?.stop();
+}
+
+/**
+ * 모니터링 상태가 남아있으면 서비스를 재시작.
+ * 앱 포그라운드 진입 시, 화면 포커스 시 호출.
+ */
+export function ensureServiceRunning(): void {
+  if (Platform.OS !== 'android') return;
+  const state = loadMonitoringState();
+  if (!state?.waypoints?.length) return;
+  // 서비스가 죽어 있어도 start 호출하면 안전하게 재시작됨
+  WakeMeService?.start(
+    state.routeId,
+    JSON.stringify(state.waypoints),
+    state.departTime ?? '',
+  );
 }
 
 export function isLocationPermissionGranted(): boolean {

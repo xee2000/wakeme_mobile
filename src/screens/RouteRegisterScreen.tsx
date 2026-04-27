@@ -460,7 +460,7 @@ function SubwayStationPickerModal({
   visible: boolean;
   title: string;
   line: string;
-  onSelect: (stationName: string) => void;
+  onSelect: (stationName: string, stationId: string) => void;
   onClose: () => void;
 }) {
   const [stations, setStations] = useState<SubwayStation[]>([]);
@@ -525,7 +525,7 @@ function SubwayStationPickerModal({
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={ss.stationItem}
-                  onPress={() => { onSelect(item.name); onClose(); }}>
+                  onPress={() => { onSelect(item.name, item.stationId); onClose(); }}>
                   <View style={[ss.lineTag, { backgroundColor: item.color }]}>
                     <Text style={ss.lineTagText}>{item.line}</Text>
                   </View>
@@ -582,7 +582,9 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
         end_stop_id: seg.end_stop_id,
         line_name: seg.line_name,
         start_station: seg.start_station,
+        start_station_id: seg.start_station_id,
         end_station: seg.end_station,
+        end_station_id: seg.end_station_id,
       })),
     );
   }, [editingRouteId]);
@@ -602,12 +604,12 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
   const openSubwayPicker = (segIndex: number, field: 'start' | 'end') =>
     setSubwayPicker({ visible: true, segIndex, field });
 
-  const handleSubwayStationSelect = (stationName: string) => {
+  const handleSubwayStationSelect = (stationName: string, stationId: string) => {
     const { segIndex, field } = subwayPicker;
     if (field === 'start') {
-      updateSegment(segIndex, { start_station: stationName });
+      updateSegment(segIndex, { start_station: stationName, start_station_id: stationId });
     } else {
-      updateSegment(segIndex, { end_station: stationName });
+      updateSegment(segIndex, { end_station: stationName, end_station_id: stationId });
     }
   };
 

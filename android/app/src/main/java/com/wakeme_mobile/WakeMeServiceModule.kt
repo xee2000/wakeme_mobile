@@ -20,9 +20,10 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
     companion object {
-        const val PREFS_NAME      = "WakeMePrefs"
-        const val KEY_ROUTE_ID    = "routeId"
-        const val KEY_WAYPOINTS   = "waypoints"   // JSON 배열 문자열
+        const val PREFS_NAME       = "WakeMePrefs"
+        const val KEY_ROUTE_ID     = "routeId"
+        const val KEY_WAYPOINTS    = "waypoints"    // JSON 배열 문자열
+        const val KEY_DEPART_TIME  = "departTime"   // "HH:MM"
     }
 
     override fun getName(): String = "WakeMeService"
@@ -34,18 +35,20 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
      *         {"id":"wp_1","lat":36.35,"lng":127.38,"name":"노은역","type":"destination"}]
      */
     @ReactMethod
-    fun start(routeId: String, waypointsJson: String) {
-        android.util.Log.i("WAKE", "WakeMeServiceModule: start routeId=$routeId waypoints=$waypointsJson")
+    fun start(routeId: String, waypointsJson: String, departTime: String) {
+        android.util.Log.i("WAKE", "WakeMeServiceModule: start routeId=$routeId departTime=$departTime waypoints=$waypointsJson")
 
         reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_ROUTE_ID,  routeId)
-            .putString(KEY_WAYPOINTS, waypointsJson)
+            .putString(KEY_ROUTE_ID,    routeId)
+            .putString(KEY_WAYPOINTS,   waypointsJson)
+            .putString(KEY_DEPART_TIME, departTime)
             .apply()
 
         val intent = Intent(reactContext, WakeMeService::class.java).apply {
-            putExtra(KEY_ROUTE_ID,  routeId)
-            putExtra(KEY_WAYPOINTS, waypointsJson)
+            putExtra(KEY_ROUTE_ID,    routeId)
+            putExtra(KEY_WAYPOINTS,   waypointsJson)
+            putExtra(KEY_DEPART_TIME, departTime)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -53,11 +56,16 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
         } else {
             reactContext.startService(intent)
         }
+
+        // 10분 워치독 시작
+        WakeMeWatchdogReceiver.schedule(reactContext)
     }
 
     @ReactMethod
     fun stop() {
         android.util.Log.i("WAKE", "WakeMeServiceModule: stop()")
+        // 워치독 먼저 취소
+        WakeMeWatchdogReceiver.cancel(reactContext)
         reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().clear().apply()
         reactContext.stopService(Intent(reactContext, WakeMeService::class.java))

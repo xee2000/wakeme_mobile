@@ -25,7 +25,9 @@ export interface RouteSegment {
   // 지하철
   line_name?: string;
   start_station?: string;
+  start_station_id?: string;  // subway_stations.station_id (예: "DJM-101")
   end_station?: string;
+  end_station_id?: string;    // subway_stations.station_id (예: "DJM-119")
 }
 
 // 등록된 경로 전체

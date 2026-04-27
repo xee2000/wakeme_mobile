@@ -83,5 +83,10 @@
             android:name="com.wakeme_mobile.WakeMeDepartureReceiver"
             android:exported="false" />
 
+        <!-- 10분 워치독: 서비스 주기적 재시작 -->
+        <receiver
+            android:name="com.wakeme_mobile.WakeMeWatchdogReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>

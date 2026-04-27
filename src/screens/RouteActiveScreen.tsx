@@ -119,40 +119,39 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       const seg = allSegs[i];
       const isDestination = i === allSegs.length - 1;
 
-      if (seg.mode === 'bus' && seg.end_stop_name) {
+      if (seg.mode === 'bus' && seg.end_stop_name && seg.end_stop_id) {
         const name = seg.end_stop_name;
+        const nodeId = seg.end_stop_id;
         try {
           const { data } = await supabase
             .from('bus_stops')
             .select('lat, lng')
-            .ilike('node_name', `%${name}%`)
-            .limit(1)
+            .eq('node_id', nodeId)
             .maybeSingle();
 
           if (data) {
             waypoints.push({ id: `wp_${i}`, lat: data.lat, lng: data.lng, name, type: isDestination ? 'destination' : 'transfer' });
-            console.log('[WAKE][WAYPOINT] 버스', name, data.lat, data.lng);
+            console.log('[WAKE][WAYPOINT] 버스', name, nodeId, data.lat, data.lng);
           } else {
-            console.warn('[WAKE][WARN] 버스 정류장 미발견:', name);
+            console.warn('[WAKE][WARN] bus_stops 미발견 node_id:', nodeId, name);
           }
         } catch (e) {
           console.warn('[WAKE][ERROR] bus_stops 조회 실패:', e);
         }
       } else if (seg.mode === 'subway' && seg.end_station) {
         const name = seg.end_station;
+        const stationId = seg.end_station_id;
         try {
-          const { data } = await supabase
-            .from('subway_stations')
-            .select('lat, lng')
-            .eq('station_name', name)
-            .limit(1)
-            .maybeSingle();
+          const query = supabase.from('subway_stations').select('lat, lng');
+          const { data } = stationId
+            ? await query.eq('station_id', stationId).maybeSingle()
+            : await query.ilike('station_name', `%${name}%`).limit(1).maybeSingle();
 
           if (data) {
             waypoints.push({ id: `wp_${i}`, lat: data.lat, lng: data.lng, name, type: isDestination ? 'destination' : 'transfer' });
-            console.log('[WAKE][WAYPOINT] 지하철', name, data.lat, data.lng);
+            console.log('[WAKE][WAYPOINT] 지하철', name, stationId ?? '(이름검색)', data.lat, data.lng);
           } else {
-            console.warn('[WAKE][WARN] 지하철역 미발견:', name);
+            console.warn('[WAKE][WARN] subway_stations 미발견:', stationId ?? name);
           }
         } catch (e) {
           console.warn('[WAKE][ERROR] subway_stations 조회 실패:', e);
