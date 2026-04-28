@@ -16,11 +16,12 @@ import kotlin.math.*
 class WakeMeService : Service() {
 
     companion object {
-        const val CHANNEL_TRACKING = "wakeme-tracking"
-        const val CHANNEL_ALERT    = "wakeme-alert"
-        const val FG_NOTIF_ID      = 9001
-        const val ALERT_RADIUS_M   = 500.0   // 알림 반경 (미터)
-        const val POLL_INTERVAL_MS = 30_000L // 30초 폴링 간격
+        const val CHANNEL_TRACKING    = "wakeme-tracking"
+        const val CHANNEL_ALERT       = "wakeme-alert"
+        const val CHANNEL_DESTINATION = "wakeme-destination"  // 하차 전용 채널 (강진동)
+        const val FG_NOTIF_ID         = 9001
+        const val ALERT_RADIUS_M      = 500.0   // 알림 반경 (미터)
+        const val POLL_INTERVAL_MS    = 30_000L // 30초 폴링 간격
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -184,7 +185,7 @@ class WakeMeService : Service() {
 
                 when (wp.type) {
                     "destination" -> {
-                        sendAlert(wp.id.hashCode(), "🚨 지금 내리세요!", "${wp.name} 도착")
+                        sendDestinationAlert(wp.id.hashCode(), "🚨 지금 내리세요!", "${wp.name} 하차 준비하세요")
                         updateForegroundNotification("🚨 지금 내리세요! — ${wp.name}")
                     }
                     "transfer" -> when (wp.nextMode) {
@@ -266,7 +267,38 @@ class WakeMeService : Service() {
         }
     }
 
-    // ── 하차/환승 알림 발송 ────────────────────────────────────────
+    // ── 하차 알림 (강진동 3회) ────────────────────────────────────
+
+    private fun sendDestinationAlert(id: Int, title: String, body: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val pi = PendingIntent.getActivity(
+            this, id,
+            packageManager.getLaunchIntentForPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        // 진동 패턴: [대기, 진동, 쉬기] × 3회
+        // 0ms 대기 → 700ms 진동 → 400ms 쉬기 → 700ms 진동 → 400ms 쉬기 → 700ms 진동
+        val vibPattern = longArrayOf(0, 700, 400, 700, 400, 700)
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_DESTINATION)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVibrate(vibPattern)
+            .setLights(0xFFFF0000.toInt(), 500, 500)  // 빨간 LED 점멸
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setFullScreenIntent(pi, true)  // 화면 켜기 (잠금화면 팝업)
+            .build()
+
+        nm.notify(id, notification)
+    }
+
+    // ── 환승 알림 ─────────────────────────────────────────────────
 
     private fun sendAlert(id: Int, title: String, body: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -279,9 +311,10 @@ class WakeMeService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setContentTitle(title)
             .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setVibrate(longArrayOf(0, 500, 200, 500))
+            .setVibrate(longArrayOf(0, 400, 200, 400))
             .setContentIntent(pi)
             .setAutoCancel(true)
             .build()
@@ -318,11 +351,25 @@ class WakeMeService : Service() {
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_TRACKING, "WakeMe 모니터링 중", NotificationManager.IMPORTANCE_LOW)
             )
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ALERT, "WakeMe 알림", NotificationManager.IMPORTANCE_HIGH)
+                NotificationChannel(CHANNEL_ALERT, "WakeMe 환승 알림", NotificationManager.IMPORTANCE_HIGH).apply {
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 400, 200, 400)
+                }
+            )
+            // 하차 전용: 최고 우선순위 + 강진동 3회
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_DESTINATION, "WakeMe 하차 알림", NotificationManager.IMPORTANCE_HIGH).apply {
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 700, 400, 700, 400, 700)
+                    enableLights(true)
+                    lightColor = 0xFFFF0000.toInt()
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                }
             )
         }
     }
