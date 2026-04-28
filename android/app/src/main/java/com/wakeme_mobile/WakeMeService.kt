@@ -179,17 +179,37 @@ class WakeMeService : Service() {
             android.util.Log.d("WAKE_GPS", "${wp.name}: ${distM.toInt()}m / ${ALERT_RADIUS_M.toInt()}m")
 
             if (distM <= ALERT_RADIUS_M) {
-                android.util.Log.i("WAKE_GPS", "✅ 진입 감지: ${wp.name} (${distM.toInt()}m)")
+                android.util.Log.i("WAKE_GPS", "✅ 진입 감지: ${wp.name} (${distM.toInt()}m) type=${wp.type} nextMode=${wp.nextMode}")
                 notifiedWaypoints.add(wp.id)
 
-                val (title, body) = when (wp.type) {
-                    "destination" -> "🚨 지금 내리세요!" to "${wp.name} 도착"
-                    else          -> "🔔 환승 준비"      to "${wp.name}에서 환승하세요"
+                when (wp.type) {
+                    "destination" -> {
+                        sendAlert(wp.id.hashCode(), "🚨 지금 내리세요!", "${wp.name} 도착")
+                        updateForegroundNotification("🚨 지금 내리세요! — ${wp.name}")
+                    }
+                    "transfer" -> when (wp.nextMode) {
+                        "bus" -> {
+                            // 다음이 버스 구간 → 탑승 정류장 버스 도착 정보 조회
+                            val stopId   = wp.nextStopId
+                            val stopName = wp.nextStopName.ifEmpty { wp.name }
+                            updateForegroundNotification("🔔 환승 준비 — $stopName 버스 안내 조회 중")
+                            Thread {
+                                try {
+                                    val body = fetchBusArrivals(stopId, stopName)
+                                    sendAlert(wp.id.hashCode(), "🚌 $stopName — 버스 시간 안내", body)
+                                } catch (e: Exception) {
+                                    android.util.Log.w("WAKE_GPS", "버스 도착 조회 실패: ${e.message}")
+                                    sendAlert(wp.id.hashCode(), "🔔 환승 준비", "$stopName 에서 버스로 환승하세요")
+                                }
+                            }.start()
+                        }
+                        else -> {
+                            // 다음이 지하철이거나 정보 없음 → 단순 환승 안내
+                            sendAlert(wp.id.hashCode(), "🔔 환승 준비", "${wp.name}에서 환승하세요")
+                            updateForegroundNotification("🔔 환승 준비 — ${wp.name}")
+                        }
+                    }
                 }
-                // 별도 알림으로 발송
-                sendAlert(wp.id.hashCode(), title, body)
-                // 포그라운드 알림도 잠시 내용 업데이트 (선택적)
-                updateForegroundNotification("$title — $body")
             }
         }
     }
@@ -207,6 +227,43 @@ class WakeMeService : Service() {
                    cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
                    sin(dLng / 2).pow(2)
         return R * 2 * asin(sqrt(a))
+    }
+
+    // ── 버스 도착 정보 조회 (환승 지오펜스 진입 시 사용) ─────────────
+
+    private fun fetchBusArrivals(stopId: String, stopName: String): String {
+        if (stopId.isEmpty()) return "탑승 준비하세요"
+
+        val url  = java.net.URL("https://wakeme-api.fly.dev/api/bus/arriving?nodeId=$stopId")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 5000
+        conn.readTimeout    = 5000
+
+        return try {
+            val response = conn.inputStream.bufferedReader().readText()
+            val json = org.json.JSONObject(response)
+            val arr  = json.optJSONArray("data") ?: return "현재 운행 정보를 불러올 수 없습니다"
+
+            data class BusArrival(val routeNo: String, val arrMin: Int)
+            val buses = mutableListOf<BusArrival>()
+            for (i in 0 until arr.length()) {
+                val item = arr.getJSONObject(i)
+                val rno  = item.optString("routeno").trim()
+                val sec  = item.optInt("arrtime", 0)
+                if (rno.isNotEmpty() && sec > 0) {
+                    buses.add(BusArrival(rno, kotlin.math.ceil(sec / 60.0).toInt()))
+                }
+            }
+            if (buses.isEmpty()) return "현재 운행 정보를 불러올 수 없습니다"
+
+            buses.sortBy { it.arrMin }
+            val cal    = java.util.Calendar.getInstance()
+            val nowStr = String.format("%d:%02d", cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
+            val summary = buses.take(4).joinToString(" • ") { "${it.routeNo}번 ${it.arrMin}분 후" }
+            "현재 ${nowStr} 기준\n$summary"
+        } finally {
+            conn.disconnect()
+        }
     }
 
     // ── 하차/환승 알림 발송 ────────────────────────────────────────

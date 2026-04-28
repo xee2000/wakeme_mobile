@@ -113,8 +113,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       .sort((a, b) => a.order_index - b.order_index);
 
     for (let i = 0; i < allSegs.length; i++) {
-      const seg = allSegs[i];
+      const seg           = allSegs[i];
       const isDestination = i === allSegs.length - 1;
+      // 이 waypoint를 지난 후 탑승할 다음 구간 정보
+      const nextSeg       = allSegs[i + 1];
+      const nextMode      = isDestination ? undefined : (nextSeg?.mode as 'bus' | 'subway' | undefined);
+      const nextStopId    = nextMode === 'bus' ? (nextSeg?.start_stop_id ?? undefined) : undefined;
+      const nextStopName  = nextMode === 'bus' ? (nextSeg?.start_stop_name ?? undefined) : undefined;
 
       if (seg.mode === 'bus' && seg.end_stop_name && seg.end_stop_id) {
         const name   = seg.end_stop_name;
@@ -128,13 +133,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 
           if (data) {
             waypoints.push({
-              id: `wp_${i}`,
-              lat: data.lat,
-              lng: data.lng,
-              name,
+              id: `wp_${i}`, lat: data.lat, lng: data.lng, name,
               type: isDestination ? 'destination' : 'transfer',
+              ...(nextMode     && { nextMode }),
+              ...(nextStopId   && { nextStopId }),
+              ...(nextStopName && { nextStopName }),
             });
-            console.log('[WAKE][WAYPOINT] 버스', name, nodeId, data.lat, data.lng);
+            console.log('[WAKE][WAYPOINT] 버스', name, nodeId, data.lat, data.lng, '→ next:', nextMode, nextStopId);
           } else {
             console.warn('[WAKE][WARN] bus_stops 미발견 node_id:', nodeId, name);
           }
@@ -152,13 +157,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 
           if (data) {
             waypoints.push({
-              id: `wp_${i}`,
-              lat: data.lat,
-              lng: data.lng,
-              name,
+              id: `wp_${i}`, lat: data.lat, lng: data.lng, name,
               type: isDestination ? 'destination' : 'transfer',
+              ...(nextMode     && { nextMode }),
+              ...(nextStopId   && { nextStopId }),
+              ...(nextStopName && { nextStopName }),
             });
-            console.log('[WAKE][WAYPOINT] 지하철', name, stationId ?? '(이름검색)', data.lat, data.lng);
+            console.log('[WAKE][WAYPOINT] 지하철', name, stationId ?? '(이름검색)', data.lat, data.lng, '→ next:', nextMode, nextStopId);
           } else {
             console.warn('[WAKE][WARN] subway_stations 미발견:', stationId ?? name);
           }
@@ -173,23 +178,27 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     }
 
     // ── 다중 경로 모니터링 시작 ───────────────────────────────────
-    //    startRouteMonitoring: MMKV 저장 + 스토어 업데이트 + 네이티브 동기화
     startRouteMonitoring({
       routeId,
       waypoints,
-      departTime: targetRoute.depart_time,
+      departTime:    targetRoute.depart_time,
       startStopId:   firstBusSeg?.start_stop_id,
       startStopName: firstBusSeg?.start_stop_name,
     });
 
     // ── 출발 시간 알림 예약 ───────────────────────────────────────
-    if (firstBusSeg?.start_stop_id) {
+    // 첫 번째 구간이 버스인 경우에만 예약
+    // (지하철로 시작하는 경우 환승 지오펜스에서 버스 정보 제공)
+    const firstSeg = allSegs[0];
+    if (firstSeg?.mode === 'bus' && firstSeg.start_stop_id) {
       scheduleDeparture(
         routeId,
         targetRoute.depart_time,
-        firstBusSeg.start_stop_name ?? '',
-        firstBusSeg.start_stop_id,
+        firstSeg.start_stop_name ?? '',
+        firstSeg.start_stop_id,
       );
+    } else {
+      console.log('[WAKE] 첫 구간이 버스가 아님(mode=%s) → 출발 알람 미예약', firstSeg?.mode);
     }
   };
 

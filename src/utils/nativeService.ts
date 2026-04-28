@@ -10,11 +10,17 @@ import { useAuthStore } from '../store/useAuthStore';
 const { WakeMeService } = NativeModules;
 
 export interface Waypoint {
-  id:   string;
-  lat:  number;
-  lng:  number;
-  name: string;
-  type: 'transfer' | 'destination';
+  id:           string;
+  lat:          number;
+  lng:          number;
+  name:         string;
+  type:         'transfer' | 'destination';
+  /** 이 waypoint 통과 후 탑승할 다음 구간 모드 */
+  nextMode?:    'bus' | 'subway';
+  /** 다음이 버스일 때 탑승 정류장 ID (API 조회용) */
+  nextStopId?:  string;
+  /** 다음이 버스일 때 탑승 정류장 이름 */
+  nextStopName?: string;
 }
 
 // ── 내부 헬퍼 — 현재 활성 경로 전체를 네이티브에 동기화 ───────────

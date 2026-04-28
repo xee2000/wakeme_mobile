@@ -46,11 +46,14 @@ class WakeMeGeofenceReceiver {
                 (0 until arr.length()).map { i ->
                     val obj = arr.getJSONObject(i)
                     Waypoint(
-                        id   = obj.getString("id"),
-                        lat  = obj.getDouble("lat"),
-                        lng  = obj.getDouble("lng"),
-                        name = obj.getString("name"),
-                        type = obj.getString("type"),
+                        id           = obj.getString("id"),
+                        lat          = obj.getDouble("lat"),
+                        lng          = obj.getDouble("lng"),
+                        name         = obj.getString("name"),
+                        type         = obj.getString("type"),
+                        nextMode     = obj.optString("nextMode", ""),
+                        nextStopId   = obj.optString("nextStopId", ""),
+                        nextStopName = obj.optString("nextStopName", ""),
                     )
                 }
             } catch (e: Exception) {
@@ -107,9 +110,12 @@ class WakeMeGeofenceReceiver {
 }
 
 data class Waypoint(
-    val id:   String,
-    val lat:  Double,
-    val lng:  Double,
-    val name: String,
-    val type: String,   // "transfer" | "destination"
+    val id:           String,
+    val lat:          Double,
+    val lng:          Double,
+    val name:         String,
+    val type:         String,   // "transfer" | "destination"
+    val nextMode:     String = "",   // "bus" | "subway" | ""
+    val nextStopId:   String = "",   // 다음이 버스일 때 탑승 정류장 ID
+    val nextStopName: String = "",   // 다음이 버스일 때 탑승 정류장 이름
 )
