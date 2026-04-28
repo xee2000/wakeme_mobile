@@ -20,10 +20,12 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
     companion object {
-        const val PREFS_NAME       = "WakeMePrefs"
-        const val KEY_ROUTE_ID     = "routeId"
-        const val KEY_WAYPOINTS    = "waypoints"    // JSON 배열 문자열
-        const val KEY_DEPART_TIME  = "departTime"   // "HH:MM"
+        const val PREFS_NAME        = "WakeMePrefs"
+        const val KEY_ROUTE_ID      = "routeId"       // 하위 호환
+        const val KEY_WAYPOINTS     = "waypoints"     // 하위 호환
+        const val KEY_DEPART_TIME   = "departTime"    // 하위 호환
+        const val KEY_USER_ID       = "userId"
+        const val KEY_ACTIVE_ROUTES = "activeRoutes"  // JSON 배열 [{routeId, waypoints, departTime}]
     }
 
     override fun getName(): String = "WakeMeService"
@@ -34,42 +36,51 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
      *   예: [{"id":"wp_0","lat":36.33,"lng":127.44,"name":"대전역","type":"transfer"},
      *         {"id":"wp_1","lat":36.35,"lng":127.38,"name":"노은역","type":"destination"}]
      */
+    /**
+     * 전체 활성 경로 목록으로 서비스 동기화 (JS 단에서 MMKV 업데이트 후 호출)
+     * allRoutesJson: [{ routeId, waypoints:[{id,lat,lng,name,type}], departTime }, ...]
+     */
     @ReactMethod
-    fun start(routeId: String, waypointsJson: String, departTime: String) {
-        android.util.Log.i("WAKE", "WakeMeServiceModule: start routeId=$routeId departTime=$departTime waypoints=$waypointsJson")
+    fun startAll(allRoutesJson: String, userId: String) {
+        android.util.Log.i("WAKE", "WakeMeServiceModule: startAll userId=$userId routes=$allRoutesJson")
 
         reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_ROUTE_ID,    routeId)
-            .putString(KEY_WAYPOINTS,   waypointsJson)
-            .putString(KEY_DEPART_TIME, departTime)
+            .putString(KEY_ACTIVE_ROUTES, allRoutesJson)
+            .putString(KEY_USER_ID,       userId)
             .apply()
 
         val intent = Intent(reactContext, WakeMeService::class.java).apply {
-            putExtra(KEY_ROUTE_ID,    routeId)
-            putExtra(KEY_WAYPOINTS,   waypointsJson)
-            putExtra(KEY_DEPART_TIME, departTime)
+            putExtra(KEY_ACTIVE_ROUTES, allRoutesJson)
         }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             reactContext.startForegroundService(intent)
         } else {
             reactContext.startService(intent)
         }
 
-        // 10분 워치독 시작
         WakeMeWatchdogReceiver.schedule(reactContext)
     }
 
+    /** 하위 호환 — 단일 경로 시작 */
     @ReactMethod
-    fun stop() {
-        android.util.Log.i("WAKE", "WakeMeServiceModule: stop()")
-        // 워치독 먼저 취소
+    fun start(routeId: String, waypointsJson: String, departTime: String, userId: String) {
+        val singleRoute = """[{"routeId":"$routeId","waypoints":$waypointsJson,"departTime":"$departTime"}]"""
+        startAll(singleRoute, userId)
+    }
+
+    @ReactMethod
+    fun stopAll() {
+        android.util.Log.i("WAKE", "WakeMeServiceModule: stopAll()")
         WakeMeWatchdogReceiver.cancel(reactContext)
         reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().clear().apply()
         reactContext.stopService(Intent(reactContext, WakeMeService::class.java))
     }
+
+    /** 하위 호환 */
+    @ReactMethod
+    fun stop() { stopAll() }
 
     @ReactMethod(isBlockingSynchronousMethod = true)
     fun isLocationPermissionGranted(): Boolean {
@@ -99,7 +110,8 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
         }
 
         val msUntilDepart = departAt.timeInMillis - System.currentTimeMillis()
-        if (msUntilDepart <= 0 || msUntilDepart > 4 * 60 * 60 * 1000) return
+        // 이미 지났거나 24시간 이상 남은 경우만 제외 (4시간 제한 제거 → 당일이면 언제든 등록)
+        if (msUntilDepart <= 0 || msUntilDepart > 24 * 60 * 60 * 1000) return
 
         val alarmManager = reactContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 

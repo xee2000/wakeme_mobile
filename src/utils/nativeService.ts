@@ -1,47 +1,78 @@
 import { NativeModules, Platform } from 'react-native';
-import { loadMonitoringState } from '../store/useMonitoringStore';
+import {
+  loadActiveRoutes,
+  saveActiveRoutes,
+  ActiveRouteItem,
+  useMonitoringStore,
+} from '../store/useMonitoringStore';
+import { useAuthStore } from '../store/useAuthStore';
 
 const { WakeMeService } = NativeModules;
 
 export interface Waypoint {
-  id: string;
-  lat: number;
-  lng: number;
+  id:   string;
+  lat:  number;
+  lng:  number;
   name: string;
   type: 'transfer' | 'destination';
 }
 
-export function startNativeService(): void {
+// ── 내부 헬퍼 — 현재 활성 경로 전체를 네이티브에 동기화 ───────────
+function syncToNative(routes: ActiveRouteItem[]) {
   if (Platform.OS !== 'android') return;
-  const state = loadMonitoringState();
-  if (!state || !state.waypoints?.length) return;
-  WakeMeService?.start(
-    state.routeId,
-    JSON.stringify(state.waypoints),
-    state.departTime ?? '',   // 출발시간 ±2시간 체크용
-  );
+  const userId = useAuthStore.getState().user?.id ?? '';
+  if (routes.length === 0) {
+    WakeMeService?.stopAll();
+    return;
+  }
+  // waypoint ID에 routeId 접두사 → geofence 수신 시 경로 구분용
+  const routesWithPrefixedIds = routes.map(r => ({
+    ...r,
+    waypoints: r.waypoints.map(wp => ({
+      ...wp,
+      id: `${r.routeId}__${wp.id}`,  // e.g. "abc123__wp_0"
+    })),
+  }));
+  WakeMeService?.startAll(JSON.stringify(routesWithPrefixedIds), userId);
 }
 
-export function stopNativeService(): void {
-  if (Platform.OS !== 'android') return;
-  WakeMeService?.stop();
+// ── 공개 API ─────────────────────────────────────────────────────
+
+/** 경로 하나 모니터링 시작 (이미 활성이면 덮어씀) */
+export function startRouteMonitoring(item: ActiveRouteItem): void {
+  const current = loadActiveRoutes();
+  const updated = [...current.filter(r => r.routeId !== item.routeId), item];
+  saveActiveRoutes(updated);
+  syncToNative(updated);
+  // Zustand 스토어 동기화 → isRouteActive() 즉시 반응
+  useMonitoringStore.getState().activateRoute(item);
 }
 
-/**
- * 모니터링 상태가 남아있으면 서비스를 재시작.
- * 앱 포그라운드 진입 시, 화면 포커스 시 호출.
- */
+/** 경로 하나 모니터링 중단 */
+export function stopRouteMonitoring(routeId: string): void {
+  const updated = loadActiveRoutes().filter(r => r.routeId !== routeId);
+  saveActiveRoutes(updated);
+  syncToNative(updated);
+  // Zustand 스토어 동기화
+  useMonitoringStore.getState().deactivateRoute(routeId);
+}
+
+/** 모든 경로 중단 */
+export function stopAllMonitoring(): void {
+  if (Platform.OS !== 'android') return;
+  WakeMeService?.stopAll();
+}
+
+/** 앱 포그라운드 복귀 / 워치독 — 저장된 상태로 서비스 재동기화 */
 export function ensureServiceRunning(): void {
-  if (Platform.OS !== 'android') return;
-  const state = loadMonitoringState();
-  if (!state?.waypoints?.length) return;
-  // 서비스가 죽어 있어도 start 호출하면 안전하게 재시작됨
-  WakeMeService?.start(
-    state.routeId,
-    JSON.stringify(state.waypoints),
-    state.departTime ?? '',
-  );
+  const routes = loadActiveRoutes();
+  if (routes.length === 0) return;
+  syncToNative(routes);
 }
+
+// ── 하위 호환 (RouteActiveScreen 이 직접 호출하는 경우) ──────────
+export function startNativeService(): void { ensureServiceRunning(); }
+export function stopNativeService():  void { stopAllMonitoring(); }
 
 export function isLocationPermissionGranted(): boolean {
   if (Platform.OS !== 'android') return true;
@@ -49,9 +80,9 @@ export function isLocationPermissionGranted(): boolean {
 }
 
 export function scheduleDeparture(
-  routeId: string,
+  routeId:    string,
   departTime: string,
-  stopName: string,
+  stopName:   string,
   startStopId: string,
 ): void {
   if (Platform.OS !== 'android') return;

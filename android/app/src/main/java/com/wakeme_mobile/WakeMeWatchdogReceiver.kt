@@ -5,54 +5,101 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.location.LocationManager
 import android.os.Build
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * 10분마다 WakeMeService를 재시작하는 워치독.
- * - startForegroundService는 이미 실행 중인 서비스에 호출해도 onStartCommand만 재호출됨 (안전)
- * - 모니터링 상태(SharedPreferences)가 없거나 서비스 시간 창 밖이면 스킵
+ *
+ * ★ setExactAndAllowWhileIdle 자가 체인 방식:
+ *    onReceive 종료 시마다 다음 알람을 즉시 예약 → Doze 모드에서도 정확히 동작
+ *    (setRepeating은 Doze에서 최대 수 시간 배치될 수 있어 사용하지 않음)
  */
 class WakeMeWatchdogReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val prefs   = context.getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
-        val routeId = prefs.getString(WakeMeServiceModule.KEY_ROUTE_ID, "")
+        val prefs         = context.getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val allRoutesJson = prefs.getString(WakeMeServiceModule.KEY_ACTIVE_ROUTES, null)
 
-        if (routeId.isNullOrEmpty()) {
-            android.util.Log.i("WAKE_WD", "모니터링 상태 없음 → 워치독 종료")
-            cancel(context)
+        if (allRoutesJson.isNullOrEmpty() || allRoutesJson == "[]") {
+            android.util.Log.i("WAKE_WD", "활성 경로 없음 → 워치독 종료 (다음 알람 미예약)")
+            // 다음 알람 예약 안 함 → 체인 종료
             return
         }
 
-        val departTime = prefs.getString(WakeMeServiceModule.KEY_DEPART_TIME, "") ?: ""
-        if (!WakeMeGeofenceReceiver.isWithinServiceWindow(departTime)) {
-            android.util.Log.i("WAKE_WD", "서비스 시간 창 밖 → 재시작 스킵 (departTime=$departTime)")
-            return
-        }
-
-        android.util.Log.i("WAKE_WD", "10분 워치독: 서비스 재시작 (routeId=$routeId)")
-        val serviceIntent = Intent(context, WakeMeService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
+        // ── 시간창 체크 ──────────────────────────────────────────────
+        val departMap = WakeMeGeofenceReceiver.buildRouteDepartMap(allRoutesJson)
+        val hasActiveWindow = if (departMap.isEmpty()) {
+            true
         } else {
-            context.startService(serviceIntent)
+            departMap.values.any { WakeMeGeofenceReceiver.isWithinServiceWindow(it) }
         }
+
+        if (hasActiveWindow) {
+            android.util.Log.i("WAKE_WD", "워치독: 서비스 재시작 (경로 수=${departMap.size})")
+            val serviceIntent = Intent(context, WakeMeService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+
+            // GPS 상태 + heartbeat
+            val lm         = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+            val userId     = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
+            val routeIds   = departMap.keys.joinToString(",")
+            val departTimes = departMap.entries.joinToString("|") { "${it.key}=${it.value}" }
+
+            val result = goAsync()
+            Thread {
+                try {
+                    sendHeartbeat(routeIds, userId, departTimes, gpsEnabled)
+                } catch (e: Exception) {
+                    android.util.Log.w("WAKE_WD", "heartbeat 전송 실패: ${e.message}")
+                } finally {
+                    result.finish()
+                }
+            }.start()
+        } else {
+            android.util.Log.i("WAKE_WD", "모든 경로 시간창 밖 → 서비스 재시작 스킵")
+        }
+
+        // ── 다음 알람 자가 체인 예약 (항상 재예약, 경로가 살아있는 한) ──
+        scheduleNext(context)
     }
 
     companion object {
-        private const val REQUEST_CODE   = 7777
-        private const val INTERVAL_MS    = 10 * 60 * 1000L  // 10분
+        private const val REQUEST_CODE = 7777
+        private const val INTERVAL_MS  = 10 * 60 * 1000L  // 10분
 
+        /** 최초 등록 또는 재등록 시 호출 */
         fun schedule(context: Context) {
+            scheduleNext(context)
+            android.util.Log.i("WAKE_WD", "워치독 최초 등록: ${INTERVAL_MS / 60000}분 후 첫 실행")
+        }
+
+        /** 다음 1회 Exact 알람 예약 (자가 체인 핵심) */
+        private fun scheduleNext(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            // setRepeating: API 19+ 에서 부정확(OS 배치)하지만 워치독 목적으론 충분
-            alarmManager.setRepeating(
-                AlarmManager.RTC_WAKEUP,
-                System.currentTimeMillis() + INTERVAL_MS,
-                INTERVAL_MS,
-                getPendingIntent(context),
-            )
-            android.util.Log.i("WAKE_WD", "워치독 알람 등록: ${INTERVAL_MS / 60000}분 주기")
+            val triggerAt    = System.currentTimeMillis() + INTERVAL_MS
+            val pi           = getPendingIntent(context)
+
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                } else {
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                }
+                android.util.Log.i("WAKE_WD", "다음 워치독 예약: ${INTERVAL_MS / 60000}분 후")
+            } catch (e: SecurityException) {
+                // API 31+ SCHEDULE_EXACT_ALARM 권한 없으면 폴백
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                android.util.Log.w("WAKE_WD", "setExact 권한 없음 → setAndAllowWhileIdle 폴백")
+            }
         }
 
         fun cancel(context: Context) {
@@ -70,5 +117,35 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
+
+        private fun sendHeartbeat(
+            routeIds:   String,
+            userId:     String,
+            departTimes: String,
+            gpsEnabled: Boolean,
+        ) {
+            val url  = URL("$SERVER_BASE/api/notify/heartbeat")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod  = "POST"
+            conn.doOutput       = true
+            conn.connectTimeout = 5000
+            conn.readTimeout    = 5000
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+
+            val body = JSONObject().apply {
+                put("userId",      userId)
+                put("routeId",     routeIds)
+                put("departTime",  departTimes)
+                put("gpsEnabled",  gpsEnabled)
+            }.toString()
+
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+
+            val code = conn.responseCode
+            android.util.Log.i("WAKE_WD", "heartbeat 완료: HTTP $code gps=$gpsEnabled routes=$routeIds")
+            conn.disconnect()
+        }
+
+        private const val SERVER_BASE = "https://wakeme-api.fly.dev"
     }
 }

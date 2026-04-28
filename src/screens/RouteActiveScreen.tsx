@@ -11,22 +11,20 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
-import {
-  useMonitoringStore,
-  saveMonitoringState,
-} from '../store/useMonitoringStore';
+import { useMonitoringStore } from '../store/useMonitoringStore';
 import { RootStackParamList, RouteSegment } from '../types';
 import { requestNotificationPermission } from '../utils/notifications';
 import {
-  startNativeService,
+  startRouteMonitoring,
+  stopRouteMonitoring,
   isLocationPermissionGranted,
   scheduleDeparture,
   cancelDeparture,
+  Waypoint,
 } from '../utils/nativeService';
 import { RestApi } from '../api/RestApi';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../api/supabaseClient';
-import { Waypoint } from '../utils/nativeService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteActive'>;
 
@@ -37,11 +35,10 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
   const user = useAuthStore(s => s.user);
   const targetRoute = routes.find(r => r.id === routeId);
 
-  const monitoringRouteId = useMonitoringStore(s => s.routeId);
-  const status = useMonitoringStore(s => s.status);
-  const { deactivate } = useMonitoringStore.getState();
-
-  const isMonitoring = monitoringRouteId === routeId;
+  // ── 다중 경로 모니터링 상태 ──────────────────────────────────────
+  const isMonitoring = useMonitoringStore(s => s.isRouteActive(routeId));
+  const activeRoutes = useMonitoringStore(s => s.activeRoutes);
+  const activeItem   = activeRoutes.find(r => r.routeId === routeId);
 
   const [targetName, setTargetName] = useState('');
   useEffect(() => {
@@ -55,6 +52,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     setTargetName(name);
   }, [targetRoute?.id]);
 
+  // ── 모니터링 시작 ────────────────────────────────────────────────
   const startMonitoring = async () => {
     if (!targetRoute) {
       console.log('[WAKE][ERROR] targetRoute 없음');
@@ -73,7 +71,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 
     await requestNotificationPermission();
 
-    // ── 권한 ─────────────────────────────
+    // ── 위치 권한 ────────────────────────────────────────────────
     if (Platform.OS === 'android') {
       const alreadyGranted = isLocationPermissionGranted();
       if (!alreadyGranted) {
@@ -92,7 +90,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       }
     }
 
-    // ── 서버 로그 ─────────────────────────
+    // ── 서버 로그 ────────────────────────────────────────────────
     try {
       await RestApi.post('/api/notify/start', {
         userId: user?.id ?? 'unknown',
@@ -104,13 +102,12 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       console.warn('[WAKE][API] 실패:', e);
     }
 
-    // 첫 번째 버스 구간 (승차 정류장 출발 알림용)
+    // ── 첫 번째 버스 구간 (출발 알림용) ──────────────────────────
     const firstBusSeg = targetRoute.segments.find(s => s.mode === 'bus');
 
-    // ── Supabase에서 전체 구간 하차 지점 좌표 조회 (버스 + 지하철) ──
+    // ── Supabase에서 하차 지점 좌표 조회 ─────────────────────────
     const waypoints: Waypoint[] = [];
 
-    // 각 구간의 하차 지점 수집 (order_index 순서 유지)
     const allSegs = targetRoute.segments
       .slice()
       .sort((a, b) => a.order_index - b.order_index);
@@ -120,7 +117,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       const isDestination = i === allSegs.length - 1;
 
       if (seg.mode === 'bus' && seg.end_stop_name && seg.end_stop_id) {
-        const name = seg.end_stop_name;
+        const name   = seg.end_stop_name;
         const nodeId = seg.end_stop_id;
         try {
           const { data } = await supabase
@@ -130,7 +127,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
             .maybeSingle();
 
           if (data) {
-            waypoints.push({ id: `wp_${i}`, lat: data.lat, lng: data.lng, name, type: isDestination ? 'destination' : 'transfer' });
+            waypoints.push({
+              id: `wp_${i}`,
+              lat: data.lat,
+              lng: data.lng,
+              name,
+              type: isDestination ? 'destination' : 'transfer',
+            });
             console.log('[WAKE][WAYPOINT] 버스', name, nodeId, data.lat, data.lng);
           } else {
             console.warn('[WAKE][WARN] bus_stops 미발견 node_id:', nodeId, name);
@@ -139,7 +142,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
           console.warn('[WAKE][ERROR] bus_stops 조회 실패:', e);
         }
       } else if (seg.mode === 'subway' && seg.end_station) {
-        const name = seg.end_station;
+        const name      = seg.end_station;
         const stationId = seg.end_station_id;
         try {
           const query = supabase.from('subway_stations').select('lat, lng');
@@ -148,7 +151,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
             : await query.ilike('station_name', `%${name}%`).limit(1).maybeSingle();
 
           if (data) {
-            waypoints.push({ id: `wp_${i}`, lat: data.lat, lng: data.lng, name, type: isDestination ? 'destination' : 'transfer' });
+            waypoints.push({
+              id: `wp_${i}`,
+              lat: data.lat,
+              lng: data.lng,
+              name,
+              type: isDestination ? 'destination' : 'transfer',
+            });
             console.log('[WAKE][WAYPOINT] 지하철', name, stationId ?? '(이름검색)', data.lat, data.lng);
           } else {
             console.warn('[WAKE][WARN] subway_stations 미발견:', stationId ?? name);
@@ -163,29 +172,17 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       console.warn('[WAKE][CRITICAL] waypoints 없음 → 지오펜스 미등록');
     }
 
-    // ── 저장 ─────────────────────────────
-    saveMonitoringState({
+    // ── 다중 경로 모니터링 시작 ───────────────────────────────────
+    //    startRouteMonitoring: MMKV 저장 + 스토어 업데이트 + 네이티브 동기화
+    startRouteMonitoring({
       routeId,
       waypoints,
       departTime: targetRoute.depart_time,
-      startStopId: firstBusSeg?.start_stop_id,
+      startStopId:   firstBusSeg?.start_stop_id,
       startStopName: firstBusSeg?.start_stop_name,
     });
 
-    // ── 서비스 시작 ───────────────────────
-    startNativeService();
-
-    useMonitoringStore
-      .getState()
-      .activate(
-        routeId,
-        waypoints,
-        targetRoute.depart_time,
-        firstBusSeg?.start_stop_id,
-        firstBusSeg?.start_stop_name,
-      );
-
-    // ── 출발 시간 알림 예약 (Android AlarmManager) ───
+    // ── 출발 시간 알림 예약 ───────────────────────────────────────
     if (firstBusSeg?.start_stop_id) {
       scheduleDeparture(
         routeId,
@@ -196,6 +193,13 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     }
   };
 
+  // ── 모니터링 중단 ────────────────────────────────────────────────
+  const stopMonitoring = () => {
+    cancelDeparture(routeId);
+    stopRouteMonitoring(routeId);
+  };
+
+  // ── 경로 없음 ────────────────────────────────────────────────────
   if (!targetRoute) {
     return (
       <View style={styles.center}>
@@ -204,24 +208,25 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     );
   }
 
-  const waypoints = useMonitoringStore(s => s.waypoints);
-
-  const statusLabel = {
-    idle: '🟢 모니터링 중',
-    active: '🟢 모니터링 중',
-    done: '✅ 완료',
-  };
-
+  // ── 모니터링 중 화면 ─────────────────────────────────────────────
   if (isMonitoring) {
+    const activeWaypoints = activeItem?.waypoints ?? [];
+
     return (
       <View style={[styles.container, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.card}>
           <Text style={styles.routeName}>{targetRoute.name}</Text>
           <Text style={styles.dest}>목적지 {targetName || '–'}</Text>
-          <Text style={styles.statusText}>{statusLabel[status]}</Text>
+          <Text style={styles.statusText}>🟢 모니터링 중</Text>
+
+          {activeItem?.departTime ? (
+            <Text style={styles.departBadge}>
+              출발 {activeItem.departTime} 기준 ±10분~2시간 알림 활성
+            </Text>
+          ) : null}
 
           <View style={styles.legend}>
-            {waypoints.map((wp, i) => (
+            {activeWaypoints.map((wp, i) => (
               <Text key={i} style={styles.legendItem}>
                 {wp.type === 'destination' ? '🏁' : '🔄'} {wp.name}
                 {'  '}({wp.type === 'destination' ? '하차' : '환승'} — 500m 이내 알림)
@@ -230,26 +235,14 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
           </View>
         </View>
 
-        {status === 'done' ? (
-          <TouchableOpacity
-            style={styles.doneBtn}
-            onPress={() => {
-              deactivate();
-              navigation.goBack();
-            }}>
-            <Text style={styles.doneBtnText}>완료 – 홈으로</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={styles.stopBtn}
-            onPress={() => { cancelDeparture(routeId); deactivate(); }}>
-            <Text style={styles.stopBtnText}>알림 중단</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity style={styles.stopBtn} onPress={stopMonitoring}>
+          <Text style={styles.stopBtnText}>알림 중단</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
+  // ── 모니터링 시작 전 화면 ────────────────────────────────────────
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + 12 }]}>
       <View style={styles.card}>
@@ -297,24 +290,25 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F7FA', padding: 20 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  container:    { flex: 1, backgroundColor: '#F5F7FA', padding: 20 },
+  center:       { flex: 1, alignItems: 'center', justifyContent: 'center' },
   card: {
     flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 24,
     shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3, marginBottom: 16,
   },
-  routeName: { fontSize: 22, fontWeight: '800', color: '#1A73E8', marginBottom: 6 },
-  departTime: { fontSize: 14, color: '#888', marginBottom: 4 },
-  dest: { fontSize: 15, color: '#555', marginBottom: 16 },
-  divider: { height: 1, backgroundColor: '#EEE', marginBottom: 16 },
+  routeName:    { fontSize: 22, fontWeight: '800', color: '#1A73E8', marginBottom: 6 },
+  departTime:   { fontSize: 14, color: '#888', marginBottom: 4 },
+  dest:         { fontSize: 15, color: '#555', marginBottom: 16 },
+  divider:      { height: 1, backgroundColor: '#EEE', marginBottom: 16 },
   segmentTitle: { fontSize: 13, fontWeight: '700', color: '#888', marginBottom: 10 },
-  segmentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
+  segmentRow:   { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
   segmentBadge: { fontSize: 20, marginTop: 1 },
-  segmentMain: { fontSize: 15, fontWeight: '700', color: '#222' },
-  segmentSub: { fontSize: 13, color: '#777', marginTop: 2 },
-  statusText: { fontSize: 18, fontWeight: '700', color: '#333', marginBottom: 24, marginTop: 8 },
-  legend: { marginTop: 8 },
-  legendItem: { fontSize: 13, color: '#999', textAlign: 'center', lineHeight: 22 },
+  segmentMain:  { fontSize: 15, fontWeight: '700', color: '#222' },
+  segmentSub:   { fontSize: 13, color: '#777', marginTop: 2 },
+  statusText:   { fontSize: 18, fontWeight: '700', color: '#333', marginBottom: 12, marginTop: 8 },
+  departBadge:  { fontSize: 12, color: '#1A73E8', backgroundColor: '#E8F0FE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4, alignSelf: 'flex-start', marginBottom: 16 },
+  legend:       { marginTop: 8 },
+  legendItem:   { fontSize: 13, color: '#999', textAlign: 'center', lineHeight: 22 },
   startBtn: {
     height: 52, backgroundColor: '#1A73E8', borderRadius: 12,
     alignItems: 'center', justifyContent: 'center', marginBottom: 10,
@@ -325,15 +319,10 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1.5, borderColor: '#1A73E8',
   },
-  editBtnText: { color: '#1A73E8', fontWeight: '700', fontSize: 16 },
+  editBtnText:  { color: '#1A73E8', fontWeight: '700', fontSize: 16 },
   stopBtn: {
     height: 52, backgroundColor: '#E53935', borderRadius: 12,
     alignItems: 'center', justifyContent: 'center',
   },
-  stopBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  doneBtn: {
-    height: 52, backgroundColor: '#34A853', borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  doneBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  stopBtnText:  { color: '#fff', fontWeight: '700', fontSize: 16 },
 });

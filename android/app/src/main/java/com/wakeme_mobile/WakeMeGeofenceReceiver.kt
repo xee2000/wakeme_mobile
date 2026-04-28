@@ -1,90 +1,17 @@
 package com.wakeme_mobile
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.os.Build
-import androidx.core.app.NotificationCompat
-import com.google.android.gms.location.Geofence
-import com.google.android.gms.location.GeofenceStatusCodes
-import com.google.android.gms.location.GeofencingEvent
 import org.json.JSONArray
 import java.util.Calendar
 
-class WakeMeGeofenceReceiver : BroadcastReceiver() {
-
-    override fun onReceive(context: Context, intent: Intent) {
-        val event = GeofencingEvent.fromIntent(intent) ?: return
-
-        if (event.hasError()) {
-            val code = GeofenceStatusCodes.getStatusCodeString(event.errorCode)
-            android.util.Log.e("WAKE_GEO", "GeofencingEvent 오류: $code")
-            return
-        }
-
-        if (event.geofenceTransition != Geofence.GEOFENCE_TRANSITION_ENTER) return
-
-        val prefs = context.getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
-        val waypointsJson = prefs.getString(WakeMeServiceModule.KEY_WAYPOINTS, "[]") ?: "[]"
-        val departTime    = prefs.getString(WakeMeServiceModule.KEY_DEPART_TIME, "") ?: ""
-        val waypoints     = parseWaypoints(waypointsJson)
-
-        // ── 출발시간 ±2시간 이내가 아니면 무시 ───────────────────────
-        if (!isWithinServiceWindow(departTime)) {
-            android.util.Log.i("WAKE_GEO", "서비스 시간 외 → 지오펜스 무시 (departTime=$departTime)")
-            return
-        }
-
-        event.triggeringGeofences?.forEach { geofence ->
-            val wp = waypoints.find { it.id == geofence.requestId } ?: return@forEach
-
-            android.util.Log.i("WAKE_GEO", "진입: ${wp.name} type=${wp.type}")
-
-            val (title, body) = when (wp.type) {
-                "destination" -> "🚨 지금 내리세요!" to "${wp.name} 도착"
-                else          -> "🔔 환승 준비"      to "${wp.name}에서 환승하세요"
-            }
-
-            sendNotification(context, wp.id.hashCode(), title, body)
-        }
-    }
-
-    private fun sendNotification(context: Context, id: Int, title: String, body: String) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(
-                    WakeMeService.CHANNEL_ALERT,
-                    "WakeMe 알림",
-                    NotificationManager.IMPORTANCE_HIGH
-                )
-            )
-        }
-
-        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-        val pi = PendingIntent.getActivity(
-            context, id, launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(context, WakeMeService.CHANNEL_ALERT)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setVibrate(longArrayOf(0, 500, 200, 500))
-            .setContentIntent(pi)
-            .setAutoCancel(true)
-            .build()
-
-        nm.notify(id, notification)
-    }
+/**
+ * 지오펜스 방식에서 GPS 폴링 방식으로 전환됨.
+ * onReceive는 더 이상 사용하지 않으며,
+ * companion object의 유틸 함수는 WakeMeService / WakeMeWatchdogReceiver에서 계속 사용.
+ */
+class WakeMeGeofenceReceiver {
 
     companion object {
+
         /**
          * 지오펜스 알림 허용 시간 창:
          *   [출발시간 - 10분] ~ [출발시간 + 2시간]
@@ -99,16 +26,14 @@ class WakeMeGeofenceReceiver : BroadcastReceiver() {
             val depHour = parts[0].toIntOrNull() ?: return true
             val depMin  = parts[1].toIntOrNull() ?: return true
 
-            val now    = Calendar.getInstance()
-            val nowMin = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+            val now         = Calendar.getInstance()
+            val nowMin      = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
             val depTotalMin = depHour * 60 + depMin
 
-            // 자정 경계 처리: 현재 시각을 출발시간 기준으로 정규화
-            var elapsed = nowMin - depTotalMin          // 출발시간 기준 경과 분
-            if (elapsed > 720)  elapsed -= 1440         // 자정 넘어 다음날인 경우
+            var elapsed = nowMin - depTotalMin
+            if (elapsed > 720)  elapsed -= 1440
             if (elapsed < -720) elapsed += 1440
 
-            // 출발 10분 전(-10) ~ 출발 2시간 후(+120) 사이
             val withinWindow = elapsed in -10..120
             android.util.Log.i("WAKE_GEO",
                 "시간창 체크: departTime=$departTime, elapsed=${elapsed}분, 허용=$withinWindow")
@@ -133,13 +58,58 @@ class WakeMeGeofenceReceiver : BroadcastReceiver() {
                 emptyList()
             }
         }
+
+        /** 다중 경로 JSON 배열에서 전체 waypoint 플래튼 */
+        fun parseAllRouteWaypoints(allRoutesJson: String): List<Waypoint> {
+            return try {
+                val routes = JSONArray(allRoutesJson)
+                val result = mutableListOf<Waypoint>()
+                for (i in 0 until routes.length()) {
+                    val route   = routes.getJSONObject(i)
+                    val wpArray = route.getJSONArray("waypoints")
+                    result.addAll(parseWaypoints(wpArray.toString()))
+                }
+                result
+            } catch (e: Exception) {
+                android.util.Log.e("WAKE_GEO", "다중 경로 파싱 실패", e)
+                emptyList()
+            }
+        }
+
+        /** 마지막 목적지 이름 (포그라운드 알림 본문용) */
+        fun lastDestinationName(allRoutesJson: String): String {
+            return try {
+                val routes = JSONArray(allRoutesJson)
+                if (routes.length() == 0) return ""
+                val last = routes.getJSONObject(routes.length() - 1)
+                val wps  = last.getJSONArray("waypoints")
+                if (wps.length() == 0) return ""
+                wps.getJSONObject(wps.length() - 1).optString("name", "")
+            } catch (e: Exception) { "" }
+        }
+
+        /** { routeId → departTime } 맵 */
+        fun buildRouteDepartMap(allRoutesJson: String?): Map<String, String> {
+            if (allRoutesJson.isNullOrEmpty()) return emptyMap()
+            return try {
+                val routes = JSONArray(allRoutesJson)
+                (0 until routes.length()).associate { i ->
+                    val r = routes.getJSONObject(i)
+                    r.getString("routeId") to r.optString("departTime", "")
+                }
+            } catch (e: Exception) { emptyMap() }
+        }
+
+        /** "routeId__wp_N" 에서 routeId 추출 */
+        fun extractRouteId(waypointId: String): String =
+            waypointId.substringBefore("__")
     }
 }
 
 data class Waypoint(
-    val id: String,
-    val lat: Double,
-    val lng: Double,
+    val id:   String,
+    val lat:  Double,
+    val lng:  Double,
     val name: String,
     val type: String,   // "transfer" | "destination"
 )
