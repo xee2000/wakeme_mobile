@@ -73,12 +73,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- GeofencingClient 진입 이벤트 수신 -->
-        <receiver
-            android:name="com.wakeme_mobile.WakeMeGeofenceReceiver"
-            android:exported="false" />
-
-        <!-- AlarmManager 출발 시간 알림 -->
+<!-- AlarmManager 출발 시간 알림 -->
         <receiver
             android:name="com.wakeme_mobile.WakeMeDepartureReceiver"
             android:exported="false" />
