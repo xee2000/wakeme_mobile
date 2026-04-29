@@ -38,6 +38,13 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
             departMap.values.any { WakeMeGeofenceReceiver.isWithinServiceWindow(it) }
         }
 
+        // GPS 상태 + userId (heartbeat는 시간창과 무관하게 항상 전송)
+        val lm          = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val gpsEnabled  = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        val userId      = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
+        val routeIds    = departMap.keys.joinToString(",")
+        val departTimes = departMap.entries.joinToString("|") { "${it.key}=${it.value}" }
+
         if (hasActiveWindow) {
             android.util.Log.i("WAKE_WD", "워치독: 서비스 재시작 (경로 수=${departMap.size})")
             val serviceIntent = Intent(context, WakeMeService::class.java)
@@ -46,27 +53,21 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
             } else {
                 context.startService(serviceIntent)
             }
-
-            // GPS 상태 + heartbeat
-            val lm         = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
-            val userId     = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
-            val routeIds   = departMap.keys.joinToString(",")
-            val departTimes = departMap.entries.joinToString("|") { "${it.key}=${it.value}" }
-
-            val result = goAsync()
-            Thread {
-                try {
-                    sendHeartbeat(routeIds, userId, departTimes, gpsEnabled)
-                } catch (e: Exception) {
-                    android.util.Log.w("WAKE_WD", "heartbeat 전송 실패: ${e.message}")
-                } finally {
-                    result.finish()
-                }
-            }.start()
         } else {
-            android.util.Log.i("WAKE_WD", "모든 경로 시간창 밖 → 서비스 재시작 스킵")
+            android.util.Log.i("WAKE_WD", "모든 경로 시간창 밖 → 서비스 재시작 스킵 (heartbeat는 전송)")
         }
+
+        // heartbeat 항상 전송 (앱 생존 확인 목적)
+        val result = goAsync()
+        Thread {
+            try {
+                sendHeartbeat(routeIds, userId, departTimes, gpsEnabled)
+            } catch (e: Exception) {
+                android.util.Log.w("WAKE_WD", "heartbeat 전송 실패: ${e.message}")
+            } finally {
+                result.finish()
+            }
+        }.start()
 
         // ── 다음 알람 자가 체인 예약 (항상 재예약, 경로가 살아있는 한) ──
         scheduleNext(context)
