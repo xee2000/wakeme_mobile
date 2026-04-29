@@ -34,11 +34,7 @@ allprojects {
 
     configurations.all {
         resolutionStrategy {
-            // 기존
             force 'com.google.android.gms:play-services-location:21.3.0'
-
-            // ⭐ 이거 추가 (핵심)
-            force 'com.naver.maps:map-sdk:3.17.0'
         }
     }
 }
