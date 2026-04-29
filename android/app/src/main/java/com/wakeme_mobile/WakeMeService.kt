@@ -140,6 +140,8 @@ class WakeMeService : Service() {
                 val loc = result.lastLocation ?: return
                 android.util.Log.d("WAKE_GPS", "위치 수신: ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
                 checkNearbyWaypoints(loc.latitude, loc.longitude, waypoints, routeDepartMap)
+                // 서버에 GPS 폴링 로그 전송 (비동기) — 끊기는 시점 파악용
+                sendGpsPollLog(loc.latitude, loc.longitude, loc.accuracy, waypoints, routeDepartMap)
             }
         }
 
@@ -228,6 +230,60 @@ class WakeMeService : Service() {
                    cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
                    sin(dLng / 2).pow(2)
         return R * 2 * asin(sqrt(a))
+    }
+
+    // ── 서버 GPS 폴링 로그 전송 (비동기) ─────────────────────────────
+
+    private fun sendGpsPollLog(
+        lat:            Double,
+        lng:            Double,
+        accuracy:       Float,
+        waypoints:      List<Waypoint>,
+        routeDepartMap: Map<String, String>,
+    ) {
+        val prefs  = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val userId = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
+
+        Thread {
+            try {
+                val wpArray = org.json.JSONArray()
+                waypoints.forEach { wp ->
+                    val distM    = haversineMeters(lat, lng, wp.lat, wp.lng).toInt()
+                    val routeId  = WakeMeGeofenceReceiver.extractRouteId(wp.id)
+                    val depart   = routeDepartMap[routeId] ?: ""
+                    val inWindow = WakeMeGeofenceReceiver.isWithinServiceWindow(depart)
+                    val notified = wp.id in notifiedWaypoints
+                    wpArray.put(org.json.JSONObject().apply {
+                        put("name",      wp.name)
+                        put("type",      wp.type)
+                        put("distanceM", distM)
+                        put("inWindow",  inWindow)
+                        put("notified",  notified)
+                    })
+                }
+
+                val body = org.json.JSONObject().apply {
+                    put("userId",    userId)
+                    put("lat",       lat)
+                    put("lng",       lng)
+                    put("accuracy",  accuracy)
+                    put("waypoints", wpArray)
+                }.toString()
+
+                val url  = java.net.URL("https://wakeme-api.fly.dev/api/notify/gps-poll")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput      = true
+                conn.connectTimeout = 3000
+                conn.readTimeout    = 3000
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (e: Exception) {
+                android.util.Log.w("WAKE_GPS", "poll 로그 전송 실패: ${e.message}")
+            }
+        }.start()
     }
 
     // ── 버스 도착 정보 조회 (환승 지오펜스 진입 시 사용) ─────────────
