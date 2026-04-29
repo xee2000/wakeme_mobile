@@ -109,9 +109,16 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
             set(Calendar.MILLISECOND, 0)
         }
 
-        val msUntilDepart = departAt.timeInMillis - System.currentTimeMillis()
-        // 이미 지났거나 24시간 이상 남은 경우만 제외 (4시간 제한 제거 → 당일이면 언제든 등록)
-        if (msUntilDepart <= 0 || msUntilDepart > 24 * 60 * 60 * 1000) return
+        // 오늘 출발 시간이 이미 지났으면 → 내일 같은 시간으로 예약
+        var msUntilDepart = departAt.timeInMillis - System.currentTimeMillis()
+        if (msUntilDepart < 0) {
+            departAt.add(Calendar.DAY_OF_MONTH, 1)
+            msUntilDepart = departAt.timeInMillis - System.currentTimeMillis()
+            android.util.Log.i("WAKE", "출발 시간 이미 지남 → 내일로 예약: ${hour}:${String.format("%02d", min)}")
+        }
+
+        // 24시간 이상 남은 경우는 너무 이른 예약 → 스킵
+        if (msUntilDepart > 24 * 60 * 60 * 1000) return
 
         val alarmManager = reactContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 

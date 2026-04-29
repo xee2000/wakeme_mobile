@@ -21,7 +21,7 @@ class WakeMeService : Service() {
         const val CHANNEL_DESTINATION = "wakeme-destination"  // 하차 전용 채널 (강진동)
         const val FG_NOTIF_ID         = 9001
         const val ALERT_RADIUS_M      = 500.0   // 알림 반경 (미터)
-        const val POLL_INTERVAL_MS    = 30_000L // 30초 폴링 간격
+        const val POLL_INTERVAL_MS    = 15_000L // 15초 폴링 간격 (지하철 출구 타이밍 대응)
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -129,10 +129,10 @@ class WakeMeService : Service() {
         }
 
         val request = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            Priority.PRIORITY_HIGH_ACCURACY,  // 지하철 출구 GPS 재획득 대응
             POLL_INTERVAL_MS,
         )
-            .setMinUpdateIntervalMillis(15_000L)
+            .setMinUpdateIntervalMillis(10_000L)
             .build()
 
         locationCallback = object : LocationCallback() {
