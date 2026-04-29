@@ -84,6 +84,9 @@ android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
+    externalNativeBuild {
+        cmake { version "3.31.6" }
+    }
 
     namespace "com.wakeme_mobile"
     defaultConfig {
@@ -99,7 +102,7 @@ android {
         ]
         // 현대 기기는 arm64-v8a만 있으면 됨 — 나머지 제거로 용량 절감
         ndk {
-            abiFilters "arm64-v8a"
+            abiFilters "arm64-v8a", "x86", "x86_64"
         }
     }
     signingConfigs {
@@ -133,7 +136,7 @@ dependencies {
     implementation("com.kakao.sdk:v2-common:2.20.1")
 
     // 네이버 지도 SDK (MainApplication.kt 에서 NaverMapSdk.getInstance 호출에 필요)
-    implementation("com.naver.maps:map-sdk:3.23.0")
+    implementation("com.naver.maps:map-sdk:3.17.0")
 
     // Google Play Services — Geofencing
     implementation("com.google.android.gms:play-services-location:21.0.1")
