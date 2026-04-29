@@ -1,0 +1,11 @@
+diff --git a/android/src/main/java/com/mrousavy/mmkv/MmkvPlatformContextModule.java b/android/src/main/java/com/mrousavy/mmkv/MmkvPlatformContextModule.java
+index 1234567..abcdefg 100644
+--- a/android/src/main/java/com/mrousavy/mmkv/MmkvPlatformContextModule.java
++++ b/android/src/main/java/com/mrousavy/mmkv/MmkvPlatformContextModule.java
+@@ -6,6 +6,7 @@ import com.facebook.react.bridge.ReactApplicationContext;
+
+ public class MmkvPlatformContextModule extends NativeMmkvPlatformContextSpec {
++    public static final String NAME = "MmkvPlatformContext";
+     private final ReactApplicationContext context;
+
+     public MmkvPlatformContextModule(ReactApplicationContext reactContext) {
