@@ -8,8 +8,8 @@ import notifee, { EventType } from '@notifee/react-native';
 import { useAuthStore } from '../store/useAuthStore';
 import { RootStackParamList } from '../types';
 import { supabase } from '../api/supabaseClient';
-import { useMonitoringStore, loadMonitoringState } from '../store/useMonitoringStore';
-import { startNativeService } from '../utils/nativeService';
+import { useMonitoringStore, loadMonitoringState, loadActiveRoutes } from '../store/useMonitoringStore';
+import { startNativeService, scheduleDeparture } from '../utils/nativeService';
 
 import LoginScreen from '../screens/LoginScreen';
 import PermissionScreen from '../screens/PermissionScreen';
@@ -143,6 +143,7 @@ export default function AppNavigator() {
 
 /**
  * 저장된 모니터링 상태가 있고 현재 서비스가 꺼져 있으면 WakeMeService를 재시작한다.
+ * 앱 재시작 시 AlarmManager 알람도 함께 재등록한다.
  */
 function restoreMonitoringIfNeeded() {
   const saved = loadMonitoringState();
@@ -154,6 +155,8 @@ function restoreMonitoringIfNeeded() {
   const currentStore = useMonitoringStore.getState();
   if (currentStore.routeId) {
     console.log('[WAKE] 복구: 이미 모니터링 중 (routeId=%s) — 스킵', currentStore.routeId);
+    // 이미 모니터링 중이어도 AlarmManager 알람은 앱 재시작 시 사라지므로 재등록
+    rescheduleDepartureAlarms();
     return;
   }
 
@@ -168,4 +171,21 @@ function restoreMonitoringIfNeeded() {
     saved.startStopId,
     saved.startStopName,
   );
+
+  // AlarmManager 출발 알람 재등록
+  rescheduleDepartureAlarms();
+}
+
+/**
+ * 저장된 모든 활성 경로의 출발 알람을 재등록한다.
+ * startStopId가 있는 경우(첫 구간이 버스)에만 등록.
+ */
+function rescheduleDepartureAlarms() {
+  const routes = loadActiveRoutes();
+  routes.forEach(r => {
+    if (r.startStopId && r.startStopName && r.departTime) {
+      console.log('[WAKE] 출발 알람 재등록: routeId=%s departTime=%s stop=%s', r.routeId, r.departTime, r.startStopName);
+      scheduleDeparture(r.routeId, r.departTime, r.startStopName, r.startStopId);
+    }
+  });
 }
