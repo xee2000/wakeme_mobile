@@ -178,18 +178,23 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     }
 
     // ── 다중 경로 모니터링 시작 ───────────────────────────────────
+    // startStopId/startStopName은 첫 구간이 버스일 때만 저장
+    // (지하철 시작 경로에 저장하면 워치독이 잘못된 출발 알람을 등록함)
+    const firstSeg = allSegs[0];
+    const busStartStopId   = firstSeg?.mode === 'bus' ? firstSeg.start_stop_id   ?? undefined : undefined;
+    const busStartStopName = firstSeg?.mode === 'bus' ? firstSeg.start_stop_name ?? undefined : undefined;
+
     startRouteMonitoring({
       routeId,
       waypoints,
       departTime:    targetRoute.depart_time,
-      startStopId:   firstBusSeg?.start_stop_id,
-      startStopName: firstBusSeg?.start_stop_name,
+      startStopId:   busStartStopId,
+      startStopName: busStartStopName,
     });
 
     // ── 출발 시간 알림 예약 ───────────────────────────────────────
     // 첫 번째 구간이 버스인 경우에만 예약
     // (지하철로 시작하는 경우 환승 지오펜스에서 버스 정보 제공)
-    const firstSeg = allSegs[0];
     if (firstSeg?.mode === 'bus' && firstSeg.start_stop_id) {
       scheduleDeparture(
         routeId,
