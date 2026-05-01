@@ -90,8 +90,38 @@ class WakeMeService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+        // 종료 직전 서버에 shutdown 로그 전송
+        sendShutdownLog()
         // 워치독과 별개로 RESTART_SERVICE 브로드캐스트도 유지 (이중 안전망)
         sendBroadcast(Intent("com.wakeme_mobile.RESTART_SERVICE"))
+    }
+
+    private fun sendShutdownLog() {
+        val prefs   = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val userId  = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
+        val routeId = prefs.getString(WakeMeServiceModule.KEY_ROUTE_ID, "") ?: ""
+        Thread {
+            try {
+                val url  = java.net.URL("https://wakeme-api.fly.dev/api/notify/shutdown")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput      = true
+                conn.connectTimeout = 3000
+                conn.readTimeout    = 3000
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                val body = org.json.JSONObject().apply {
+                    put("userId",  userId)
+                    put("routeId", routeId)
+                    put("reason",  "onDestroy")
+                }.toString()
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                conn.responseCode
+                conn.disconnect()
+                android.util.Log.i("WAKE", "shutdown 로그 전송 완료")
+            } catch (e: Exception) {
+                android.util.Log.w("WAKE", "shutdown 로그 전송 실패: ${e.message}")
+            }
+        }.start()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
