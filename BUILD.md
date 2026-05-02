@@ -125,6 +125,33 @@ defaultConfig {
 
 ---
 
+## 7. Google Play 배포용 AAB 빌드
+
+### AAB 빌드 명령어
+```bash
+cd android && ./gradlew bundleRelease
+```
+
+### 출력 위치
+```
+android/app/build/outputs/bundle/release/app-release.aab
+```
+
+### ADB로 직접 설치 불가 — Google Play 업로드 전용
+> AAB는 기기에 직접 설치할 수 없습니다. 테스트는 APK(`assembleRelease`)를 사용하고,
+> Google Play Console 업로드 시에만 AAB를 사용하세요.
+
+### 전체 빌드 → 업로드 한 줄 요약
+```bash
+# 1. JS 번들 + AAB 생성
+cd android && ./gradlew bundleRelease
+
+# 2. 출력 파일 확인
+ls -lh app/build/outputs/bundle/release/app-release.aab
+```
+
+---
+
 ## 참고: 현재 빌드 환경
 
 | 항목 | 값 |
