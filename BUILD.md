@@ -140,7 +140,7 @@ android/app/build/outputs/bundle/release/app-release.aab
 ### 키스토어 정보 (local.properties에 저장됨 — gitignore)
 | 항목 | 값 |
 |------|----|
-| JKS 경로 | `/Users/ijeongho/GitHub/wakeme/jks/wakeme.jks` |
+| JKS 경로 | `/Users/ijeongho/GitHub/wakeme_mobile/wakeme.jks` |
 | alias | `wakeme` |
 | 비밀번호 | `local.properties` → `WAKEME_STORE_PASSWORD` |
 
