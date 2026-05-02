@@ -24,7 +24,7 @@ class MainApplication : Application(), ReactApplication {
   override fun onCreate() {
     super.onCreate()
     // 카카오 SDK 초기화 (네이티브 앱 키)
-    KakaoSdk.init(this, "b1a33e107f188d1a51e5302ead784509")
+    KakaoSdk.init(this, "b04b17eeb689cfd9d2a18871748bff94")
     NaverMapSdk.getInstance(this).client = NaverMapSdk.NcpKeyClient("hudu5weji7")
     loadReactNative(this)
   }
