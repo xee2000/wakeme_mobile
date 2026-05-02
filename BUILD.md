@@ -137,6 +137,15 @@ cd android && ./gradlew bundleRelease
 android/app/build/outputs/bundle/release/app-release.aab
 ```
 
+### 키스토어 정보 (local.properties에 저장됨 — gitignore)
+| 항목 | 값 |
+|------|----|
+| JKS 경로 | `/Users/ijeongho/GitHub/wakeme/jks/wakeme.jks` |
+| alias | `wakeme` |
+| 비밀번호 | `local.properties` → `WAKEME_STORE_PASSWORD` |
+
+> 비밀번호는 `android/local.properties`에만 저장되며 Git에 커밋되지 않습니다.
+
 ### ADB로 직접 설치 불가 — Google Play 업로드 전용
 > AAB는 기기에 직접 설치할 수 없습니다. 테스트는 APK(`assembleRelease`)를 사용하고,
 > Google Play Console 업로드 시에만 AAB를 사용하세요.

@@ -110,6 +110,12 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            storeFile file(localProps.getProperty("WAKEME_STORE_FILE") ?: "")
+            storePassword localProps.getProperty("WAKEME_STORE_PASSWORD") ?: ""
+            keyAlias localProps.getProperty("WAKEME_KEY_ALIAS") ?: ""
+            keyPassword localProps.getProperty("WAKEME_KEY_PASSWORD") ?: ""
+        }
     }
     buildTypes {
         debug {
@@ -118,7 +124,7 @@ android {
             manifestPlaceholders = [usesCleartextTraffic: "true"]
         }
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             shrinkResources enableProguardInReleaseBuilds  // 쓰지 않는 리소스 제거
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
