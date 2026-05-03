@@ -424,25 +424,109 @@ function MapStopSelectModal({
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 대전 지하철 호선 선택
+// 지하철 도시 + 호선 선택
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const DAEJEON_LINES = [
-  { label: '1호선', color: '#F5A200' },
+const SUBWAY_CITIES: {
+  name: string;
+  lines: { label: string; color: string }[];
+}[] = [
+  {
+    name: '서울',
+    lines: [
+      { label: '1호선', color: '#0052A4' },
+      { label: '2호선', color: '#009246' },
+      { label: '3호선', color: '#EF7C1C' },
+      { label: '4호선', color: '#00A2D1' },
+      { label: '5호선', color: '#996CAC' },
+      { label: '6호선', color: '#CD7C2F' },
+      { label: '7호선', color: '#747F00' },
+      { label: '8호선', color: '#E6186C' },
+      { label: '9호선', color: '#BDB092' },
+    ],
+  },
+  {
+    name: '인천',
+    lines: [
+      { label: '1호선', color: '#7CA8D5' },
+      { label: '2호선', color: '#F5A200' },
+      { label: '7호선', color: '#747F00' },
+    ],
+  },
+  {
+    name: '부산',
+    lines: [
+      { label: '1호선', color: '#F05A28' },
+      { label: '2호선', color: '#3CB44A' },
+      { label: '3호선', color: '#8C5E3A' },
+      { label: '4호선', color: '#7EC8E3' },
+    ],
+  },
+  {
+    name: '대구',
+    lines: [
+      { label: '1호선', color: '#F5A200' },
+      { label: '2호선', color: '#009246' },
+      { label: '3호선', color: '#C9A227' },
+    ],
+  },
+  {
+    name: '대전',
+    lines: [{ label: '1호선', color: '#F5A200' }],
+  },
 ];
 
-function SubwayLinePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function CityLinePicker({
+  city,
+  line,
+  onCityChange,
+  onLineChange,
+}: {
+  city: string;
+  line: string;
+  onCityChange: (c: string) => void;
+  onLineChange: (l: string) => void;
+}) {
+  const cityData = SUBWAY_CITIES.find(c => c.name === city) ?? SUBWAY_CITIES[0];
+
   return (
-    <View style={styles.lineRow}>
-      {DAEJEON_LINES.map(line => (
-        <TouchableOpacity
-          key={line.label}
-          style={[styles.lineBtn, { borderColor: line.color }, value === line.label && { backgroundColor: line.color }]}
-          onPress={() => onChange(line.label)}>
-          <Text style={[styles.lineBtnText, value === line.label && { color: '#fff' }]}>
-            {line.label}
-          </Text>
-        </TouchableOpacity>
-      ))}
+    <View>
+      {/* 도시 탭 */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 6, paddingVertical: 2 }}>
+          {SUBWAY_CITIES.map(c => (
+            <TouchableOpacity
+              key={c.name}
+              style={[styles.cityTab, city === c.name && styles.cityTabActive]}
+              onPress={() => {
+                onCityChange(c.name);
+                onLineChange(c.lines[0].label);
+              }}>
+              <Text style={[styles.cityTabText, city === c.name && styles.cityTabTextActive]}>
+                {c.name}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
+      {/* 호선 칩 */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View style={{ flexDirection: 'row', gap: 6, paddingVertical: 2 }}>
+          {cityData.lines.map(l => (
+            <TouchableOpacity
+              key={l.label}
+              style={[
+                styles.lineBtn,
+                { borderColor: l.color },
+                line === l.label && { backgroundColor: l.color },
+              ]}
+              onPress={() => onLineChange(l.label)}>
+              <Text style={[styles.lineBtnText, line === l.label && { color: '#fff' }]}>
+                {l.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -453,12 +537,14 @@ function SubwayLinePicker({ value, onChange }: { value: string; onChange: (v: st
 function SubwayStationPickerModal({
   visible,
   title,
+  city,
   line,
   onSelect,
   onClose,
 }: {
   visible: boolean;
   title: string;
+  city: string;
   line: string;
   onSelect: (stationName: string, stationId: string) => void;
   onClose: () => void;
@@ -471,10 +557,10 @@ function SubwayStationPickerModal({
   useEffect(() => {
     if (!visible) { setQuery(''); return; }
     setLoading(true);
-    fetchSubwayStations(line || undefined)
+    fetchSubwayStations(line || undefined, city || undefined)
       .then(data => { setStations(data); setFiltered(data); })
       .finally(() => setLoading(false));
-  }, [visible, line]);
+  }, [visible, line, city]);
 
   useEffect(() => {
     if (!query.trim()) { setFiltered(stations); return; }
@@ -594,6 +680,10 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
     segIndex: number;
     field: 'start' | 'end';
   }>({ visible: false, segIndex: 0, field: 'start' });
+
+  // 구간별 선택 도시 (UI 상태 — DB에는 저장 안 함)
+  const [subwayCities, setSubwayCities] = useState<Record<number, string>>({});
+  const getSubwayCity = (idx: number) => subwayCities[idx] ?? '서울';
 
   const [subwayPicker, setSubwayPicker] = useState<{
     visible: boolean;
@@ -770,10 +860,15 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
               </>
             ) : (
               <>
-                <Text style={styles.fieldLabel}>호선 선택</Text>
-                <SubwayLinePicker
-                  value={seg.line_name ?? ''}
-                  onChange={v => updateSegment(index, { line_name: v })}
+                <Text style={styles.fieldLabel}>도시 · 호선 선택</Text>
+                <CityLinePicker
+                  city={getSubwayCity(index)}
+                  line={seg.line_name ?? '1호선'}
+                  onCityChange={c => {
+                    setSubwayCities(prev => ({ ...prev, [index]: c }));
+                    updateSegment(index, { line_name: SUBWAY_CITIES.find(x => x.name === c)?.lines[0].label ?? '1호선' });
+                  }}
+                  onLineChange={v => updateSegment(index, { line_name: v })}
                 />
 
                 <Text style={styles.fieldLabel}>승차 역</Text>
@@ -843,6 +938,7 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
       <SubwayStationPickerModal
         visible={subwayPicker.visible}
         title={subwayPicker.field === 'start' ? '승차 역 선택' : '하차 역 선택'}
+        city={getSubwayCity(subwayPicker.segIndex)}
         line={segments[subwayPicker.segIndex]?.line_name ?? '1호선'}
         onSelect={handleSubwayStationSelect}
         onClose={() => setSubwayPicker(s => ({ ...s, visible: false }))}
@@ -900,8 +996,15 @@ const styles = StyleSheet.create({
   saveBtn: { height: 52, backgroundColor: '#1A73E8', borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   lineRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  lineBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 2 },
-  lineBtnText: { fontSize: 14, fontWeight: '700', color: '#333' },
+  lineBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 2 },
+  lineBtnText: { fontSize: 13, fontWeight: '700', color: '#333' },
+  cityTab: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+    backgroundColor: '#F0F0F0', borderWidth: 1.5, borderColor: '#DDD',
+  },
+  cityTabActive: { backgroundColor: '#1A73E8', borderColor: '#1A73E8' },
+  cityTabText: { fontSize: 13, fontWeight: '600', color: '#555' },
+  cityTabTextActive: { color: '#fff', fontWeight: '700' },
 });
 
 // WheelPicker 스타일

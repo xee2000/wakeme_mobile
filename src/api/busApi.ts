@@ -100,11 +100,13 @@ export interface SubwayStation {
   color: string;
 }
 
-export async function fetchSubwayStations(line?: string): Promise<SubwayStation[]> {
+export async function fetchSubwayStations(line?: string, city?: string): Promise<SubwayStation[]> {
   try {
-    const path = line
-      ? `/api/subway/stations?line=${encodeURIComponent(line)}`
-      : '/api/subway/stations';
+    const params = new URLSearchParams();
+    if (city) params.set('city', city);
+    if (line) params.set('line', line);
+    const qs = params.toString();
+    const path = `/api/subway/stations${qs ? '?' + qs : ''}`;
     return await RestApi.get<SubwayStation[]>(path);
   } catch (err) {
     console.error('[WAKE] fetchSubwayStations error:', err);
