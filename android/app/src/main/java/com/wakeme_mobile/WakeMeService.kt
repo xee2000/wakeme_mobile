@@ -37,6 +37,9 @@ class WakeMeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // ★ startForegroundService() 후 5초 내 호출 필수 — 반드시 첫 줄에서 실행
+        startForeground(FG_NOTIF_ID, buildTrackingNotification())
+
         val prefs = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
 
         // 다중 경로: intent extra 우선, 없으면 SharedPreferences
@@ -60,7 +63,11 @@ class WakeMeService : Service() {
             // 하위 호환 — 단일 경로
             val routeId = intent?.getStringExtra(WakeMeServiceModule.KEY_ROUTE_ID)
                 ?: prefs.getString(WakeMeServiceModule.KEY_ROUTE_ID, "") ?: ""
-            if (routeId.isEmpty()) { stopSelf(); return START_NOT_STICKY }
+            if (routeId.isEmpty()) {
+                stopForeground(true)
+                stopSelf()
+                return START_NOT_STICKY
+            }
             val waypointsJson = intent?.getStringExtra(WakeMeServiceModule.KEY_WAYPOINTS)
                 ?: prefs.getString(WakeMeServiceModule.KEY_WAYPOINTS, "[]") ?: "[]"
             waypoints = WakeMeGeofenceReceiver.parseWaypoints(waypointsJson)
@@ -69,12 +76,14 @@ class WakeMeService : Service() {
 
         if (waypoints.isEmpty()) {
             android.util.Log.w("WAKE", "waypoints 없음 → 서비스 종료")
+            stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
         }
 
         val routeDepartMap = WakeMeGeofenceReceiver.buildRouteDepartMap(allRoutesJson)
 
+        // 목적지 정보로 포그라운드 알림 업데이트
         startForeground(FG_NOTIF_ID, buildTrackingNotification(destText))
 
         // 기존 위치 콜백 제거 후 재시작 (onStartCommand 재호출 대응)
