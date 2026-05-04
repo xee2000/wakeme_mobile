@@ -3,23 +3,45 @@ import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation';
 import { RestApi } from './src/api/RestApi';
-import { checkForUpdate, UpdateFlow } from 'react-native-in-app-updates';
+import InAppUpdates from 'sp-react-native-in-app-updates';
+import {
+  AndroidStartUpdateOptions,
+  IAUUpdateKind,
+  StatusUpdateEvent,
+  AndroidInstallStatus,
+} from 'sp-react-native-in-app-updates';
 
 // ── In-App Update 훅 ──────────────────────────────────────────────
-// FLEXIBLE: 백그라운드 다운로드 → 다운로드 완료 시 재시작 유도 알림
-// IMMEDIATE: 전체화면 강제 업데이트 (중요 업데이트 시 사용)
+const inAppUpdates = new InAppUpdates(false);
+
 function useInAppUpdate() {
   useEffect(() => {
     if (Platform.OS !== 'android') return;
 
-    checkForUpdate(UpdateFlow.FLEXIBLE)
-      .then(() => {
-        // FLEXIBLE 모드: Play Store가 백그라운드에서 다운로드 후
-        // 다음 앱 실행 시 자동 설치됨 (별도 처리 불필요)
-        console.log('[UPDATE] 업데이트 확인 완료');
+    inAppUpdates
+      .checkNeedsUpdate()
+      .then(result => {
+        if (!result.shouldUpdate) return;
+
+        // FLEXIBLE: 백그라운드 다운로드 → 완료 시 재시작 유도
+        const options: AndroidStartUpdateOptions = {
+          updateType: IAUUpdateKind.FLEXIBLE,
+        };
+
+        inAppUpdates.addStatusUpdateListener((event: StatusUpdateEvent) => {
+          if (event.status === AndroidInstallStatus.DOWNLOADED) {
+            // 다운로드 완료 → 재시작 시 자동 설치
+            inAppUpdates.installUpdate();
+            inAppUpdates.removeStatusUpdateListener(() => {});
+          }
+        });
+
+        inAppUpdates.startUpdate(options).catch((err: unknown) => {
+          console.warn('[UPDATE] startUpdate 실패:', err);
+        });
       })
       .catch((err: unknown) => {
-        // 개발 환경 또는 Play Store 미연동 시 에러 무시
+        // 개발 환경 / Play Store 미연동 시 무시
         console.warn('[UPDATE] 업데이트 확인 실패 (무시):', err);
       });
   }, []);
