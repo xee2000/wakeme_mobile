@@ -22,6 +22,7 @@
     "@supabase/supabase-js": "^2.49.4",
     "react": "19.2.3",
     "react-native": "0.85.1",
+    "react-native-device-info": "^15.0.2",
     "react-native-geolocation-service": "^5.3.1",
     "react-native-mmkv": "^3.2.0",
     "react-native-safe-area-context": "^5.5.2",
