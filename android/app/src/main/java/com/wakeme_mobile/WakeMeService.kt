@@ -21,7 +21,9 @@ class WakeMeService : Service() {
         const val CHANNEL_DESTINATION = "wakeme-destination"  // 하차 전용 채널 (강진동)
         const val FG_NOTIF_ID         = 9001
         const val ALERT_RADIUS_M      = 500.0   // 알림 반경 (미터)
-        const val POLL_INTERVAL_MS    = 15_000L // 15초 폴링 간격 (지하철 출구 타이밍 대응)
+        const val POLL_INTERVAL_MS    = 15_000L // 15초 GPS 폴링 간격 (지하철 출구 타이밍 대응)
+        const val GPS_LOG_INTERVAL_MS = 30_000L // 서버 로그 전송 간격 (시간창 내에서만, 30초 1회)
+        const val GPS_CACHE_TTL_MS    = 300_000L // 마지막 GPS 캐시 유효 시간 (5분, 지하 구간 대응)
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -29,6 +31,19 @@ class WakeMeService : Service() {
 
     // 이번 서비스 인스턴스에서 이미 알림 보낸 waypoint ID 집합 (중복 방지)
     private val notifiedWaypoints = mutableSetOf<String>()
+
+    // 서버 GPS 로그 마지막 전송 시각 (30초 throttle)
+    @Volatile private var lastGpsPollLogTime = 0L
+
+    // 마지막 수신 GPS 위치 캐시 (지하 구간 GPS 단절 대응)
+    @Volatile private var lastKnownLat  = Double.NaN
+    @Volatile private var lastKnownLng  = Double.NaN
+    @Volatile private var lastKnownAcc  = Float.MAX_VALUE
+    @Volatile private var lastKnownTime = 0L
+
+    // 지하 구간 fallback 타이머
+    private var gpsTimeoutHandler: android.os.Handler? = null
+    private var gpsTimeoutRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -99,6 +114,7 @@ class WakeMeService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+        gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
         // 종료 직전 서버에 shutdown 로그 전송
         sendShutdownLog()
         // 워치독과 별개로 RESTART_SERVICE 브로드캐스트도 유지 (이중 안전망)
@@ -174,13 +190,35 @@ class WakeMeService : Service() {
             .setMinUpdateIntervalMillis(10_000L)
             .build()
 
+        // 지하 구간 fallback 핸들러 초기화 (GPS 단절 시 캐시 위치로 재시도)
+        gpsTimeoutHandler = android.os.Handler(Looper.getMainLooper())
+
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
-                android.util.Log.d("WAKE_GPS", "위치 수신: ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
+
+                // ── GPS 위치 캐시 갱신 ──────────────────────────────────
+                lastKnownLat  = loc.latitude
+                lastKnownLng  = loc.longitude
+                lastKnownAcc  = loc.accuracy
+                lastKnownTime = System.currentTimeMillis()
+
+                // fallback 타이머 리셋 (GPS가 다시 잡혔으므로)
+                rescheduleGpsFallback(waypoints, routeDepartMap)
+
+                // 시간창 포함 여부 확인 (로그 목적)
+                val anyInWindow = routeDepartMap.values.any {
+                    WakeMeGeofenceReceiver.isWithinServiceWindow(it)
+                }
+                if (anyInWindow) {
+                    android.util.Log.d("WAKE_GPS",
+                        "위치 수신: ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
+                }
+
                 checkNearbyWaypoints(loc.latitude, loc.longitude, waypoints, routeDepartMap)
-                // 서버에 GPS 폴링 로그 전송 (비동기) — 끊기는 시점 파악용
-                sendGpsPollLog(loc.latitude, loc.longitude, loc.accuracy, waypoints, routeDepartMap)
+
+                // 서버 로그: 시간창 내 + 30초 throttle
+                sendGpsPollLogThrottled(loc.latitude, loc.longitude, loc.accuracy, waypoints, routeDepartMap)
             }
         }
 
@@ -190,6 +228,53 @@ class WakeMeService : Service() {
             Looper.getMainLooper(),
         )
         android.util.Log.i("WAKE", "FusedLocationProvider ${POLL_INTERVAL_MS / 1000}초 폴링 등록")
+    }
+
+    /**
+     * GPS 단절 감지 fallback 타이머 재설정.
+     * GPS가 [POLL_INTERVAL_MS * 3] 이상 수신되지 않으면
+     * 마지막 캐시 위치로 waypoint 체크를 수행한다 (지하 구간 대응).
+     * 캐시가 GPS_CACHE_TTL_MS(5분)보다 오래됐으면 동작 안 함.
+     */
+    private fun rescheduleGpsFallback(
+        waypoints:      List<Waypoint>,
+        routeDepartMap: Map<String, String>,
+    ) {
+        gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
+
+        val fallbackDelayMs = POLL_INTERVAL_MS * 3   // 45초 무응답 시 fallback 실행
+        val fallbackInterval = 30_000L                // fallback 이후 30초마다 재시도
+
+        fun scheduleNext() {
+            val r = Runnable {
+                val now        = System.currentTimeMillis()
+                val cacheAgeMs = now - lastKnownTime
+
+                if (lastKnownLat.isNaN() || cacheAgeMs > GPS_CACHE_TTL_MS) {
+                    android.util.Log.d("WAKE_GPS", "GPS 캐시 없음 또는 만료 → fallback 중단")
+                    return@Runnable
+                }
+
+                val anyInWindow = routeDepartMap.values.any {
+                    WakeMeGeofenceReceiver.isWithinServiceWindow(it)
+                }
+                if (!anyInWindow) return@Runnable
+
+                android.util.Log.i("WAKE_GPS",
+                    "⚠️ GPS 단절 중 — 캐시 위치(${cacheAgeMs / 1000}초 전)로 체크: $lastKnownLat, $lastKnownLng")
+
+                checkNearbyWaypoints(lastKnownLat, lastKnownLng, waypoints, routeDepartMap)
+                sendGpsPollLogThrottled(lastKnownLat, lastKnownLng, lastKnownAcc, waypoints, routeDepartMap, isCached = true)
+
+                // 다음 fallback 예약
+                gpsTimeoutRunnable = Runnable { scheduleNext() }
+                gpsTimeoutHandler?.postDelayed(gpsTimeoutRunnable!!, fallbackInterval)
+            }
+            gpsTimeoutRunnable = r
+            gpsTimeoutHandler?.postDelayed(r, fallbackDelayMs)
+        }
+
+        scheduleNext()
     }
 
     // ── 거리 체크 ──────────────────────────────────────────────────
@@ -271,15 +356,27 @@ class WakeMeService : Service() {
         return R * 2 * asin(sqrt(a))
     }
 
-    // ── 서버 GPS 폴링 로그 전송 (비동기) ─────────────────────────────
+    // ── 서버 GPS 폴링 로그 전송 — 시간창 내 + 30초 throttle ────────
 
-    private fun sendGpsPollLog(
+    private fun sendGpsPollLogThrottled(
         lat:            Double,
         lng:            Double,
         accuracy:       Float,
         waypoints:      List<Waypoint>,
         routeDepartMap: Map<String, String>,
+        isCached:       Boolean = false,
     ) {
+        // ① 시간창 외부이면 전송 안 함
+        val anyInWindow = routeDepartMap.values.any {
+            WakeMeGeofenceReceiver.isWithinServiceWindow(it)
+        }
+        if (!anyInWindow) return
+
+        // ② 30초 throttle
+        val now = System.currentTimeMillis()
+        if (now - lastGpsPollLogTime < GPS_LOG_INTERVAL_MS) return
+        lastGpsPollLogTime = now
+
         val prefs  = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
         val userId = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
 
@@ -298,6 +395,7 @@ class WakeMeService : Service() {
                         put("distanceM", distM)
                         put("inWindow",  inWindow)
                         put("notified",  notified)
+                        if (isCached) put("cached", true)
                     })
                 }
 
@@ -305,8 +403,9 @@ class WakeMeService : Service() {
                     put("userId",    userId)
                     put("lat",       lat)
                     put("lng",       lng)
-                    put("accuracy",  accuracy)
+                    put("accuracy",  if (isCached) -1 else accuracy) // -1 = 캐시 위치임을 표시
                     put("waypoints", wpArray)
+                    if (isCached) put("gpsLost", true)
                 }.toString()
 
                 val url  = java.net.URL("https://wakeme-api.fly.dev/api/notify/gps-poll")
