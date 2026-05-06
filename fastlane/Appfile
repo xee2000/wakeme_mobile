@@ -1,0 +1,2 @@
+json_key_file(ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("~/secrets/wakeme-play-store.json"))
+package_name("com.wakeme_mobile")

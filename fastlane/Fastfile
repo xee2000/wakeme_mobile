@@ -1,0 +1,122 @@
+default_platform(:android)
+
+# ── 경로 상수 ──────────────────────────────────────────────────────
+BUILD_GRADLE = File.expand_path("../android/app/build.gradle", __dir__)
+AAB_PATH     = File.expand_path("../android/app/build/outputs/bundle/release/app-release.aab", __dir__)
+
+platform :android do
+
+  # ──────────────────────────────────────────────────────────────────
+  # lane :internal
+  #
+  # 1) versionCode / versionName 자동 증가
+  # 2) AAB 빌드 (bundleRelease)
+  # 3) Google Play 내부 테스트 트랙에 업로드
+  #
+  # 사용법:
+  #   bundle exec fastlane internal               → 패치 버전 자동 증가 (1.4 → 1.5)
+  #   bundle exec fastlane internal bump:major    → 메이저 증가 (1.4 → 2.0)
+  #   bundle exec fastlane internal bump:minor    → 마이너 증가 (1.4 → 1.5)  ← 기본
+  #   bundle exec fastlane internal bump:patch    → 패치 증가  (1.4 → 1.4.1)
+  # ──────────────────────────────────────────────────────────────────
+  desc "버전 올리고 AAB 빌드 후 내부 테스트 업로드"
+  lane :internal do |options|
+    bump_type = (options[:bump] || "minor").to_sym
+
+    # ── 1. 버전 읽기 ────────────────────────────────────────────────
+    gradle_content   = File.read(BUILD_GRADLE)
+    current_code     = gradle_content.match(/versionCode\s+(\d+)/)[1].to_i
+    current_name     = gradle_content.match(/versionName\s+"([\d.]+)"/)[1]
+
+    # ── 2. 버전 증가 ────────────────────────────────────────────────
+    new_code = current_code + 1
+    new_name = bump_version(current_name, bump_type)
+
+    UI.message "버전: #{current_name} (#{current_code}) → #{new_name} (#{new_code})"
+
+    # ── 3. build.gradle 업데이트 ────────────────────────────────────
+    updated = gradle_content
+      .sub(/versionCode\s+\d+/, "versionCode #{new_code}")
+      .sub(/versionName\s+"[\d.]+"/, "versionName \"#{new_name}\"")
+    File.write(BUILD_GRADLE, updated)
+
+    # ── 4. Git 커밋 (선택) ──────────────────────────────────────────
+    git_commit(
+      path:    ["android/app/build.gradle"],
+      message: "chore: bump version to #{new_name} (#{new_code})",
+    )
+
+    # ── 5. AAB 빌드 ─────────────────────────────────────────────────
+    UI.message "AAB 빌드 시작..."
+    gradle(
+      task:        "bundle",
+      build_type:  "release",
+      project_dir: "android",
+      print_command: true,
+    )
+
+    UI.success "AAB 생성 완료: #{AAB_PATH}"
+
+    # ── 6. Google Play 내부 테스트 업로드 ───────────────────────────
+    UI.message "Google Play 내부 테스트에 업로드 중..."
+    upload_to_play_store(
+      track:           "internal",
+      aab:             AAB_PATH,
+      skip_upload_apk: true,
+      release_status:  "draft",   # 자동 배포 없이 초안으로 올림 → 콘솔에서 검토 후 배포
+    )
+
+    UI.success "✅ 내부 테스트 업로드 완료! v#{new_name} (#{new_code})"
+  end
+
+  # ──────────────────────────────────────────────────────────────────
+  # lane :build_only
+  # 업로드 없이 AAB만 빌드 (서명 확인용)
+  # ──────────────────────────────────────────────────────────────────
+  desc "AAB만 빌드 (업로드 없음)"
+  lane :build_only do |options|
+    bump_type = (options[:bump] || "minor").to_sym
+
+    gradle_content = File.read(BUILD_GRADLE)
+    current_code   = gradle_content.match(/versionCode\s+(\d+)/)[1].to_i
+    current_name   = gradle_content.match(/versionName\s+"([\d.]+)"/)[1]
+    new_code       = current_code + 1
+    new_name       = bump_version(current_name, bump_type)
+
+    UI.message "버전: #{current_name} (#{current_code}) → #{new_name} (#{new_code})"
+
+    updated = gradle_content
+      .sub(/versionCode\s+\d+/, "versionCode #{new_code}")
+      .sub(/versionName\s+"[\d.]+"/, "versionName \"#{new_name}\"")
+    File.write(BUILD_GRADLE, updated)
+
+    gradle(
+      task:        "bundle",
+      build_type:  "release",
+      project_dir: "android",
+    )
+
+    UI.success "✅ AAB 빌드 완료: #{AAB_PATH}"
+    UI.success "   버전: #{new_name} (#{new_code})"
+  end
+
+  # ──────────────────────────────────────────────────────────────────
+  # 헬퍼: versionName 증가
+  # ──────────────────────────────────────────────────────────────────
+  def bump_version(version_name, bump_type)
+    parts = version_name.split(".").map(&:to_i)
+    parts << 0 while parts.size < 3
+
+    case bump_type
+    when :major
+      [parts[0] + 1, 0, 0].join(".")
+    when :minor
+      [parts[0], parts[1] + 1, 0].join(".").sub(/\.0$/, "")
+    when :patch
+      [parts[0], parts[1], parts[2] + 1].join(".")
+    else
+      [parts[0], parts[1] + 1, 0].join(".").sub(/\.0$/, "")
+    end
+  end
+
+end
