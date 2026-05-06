@@ -24,6 +24,8 @@ class WakeMeService : Service() {
         const val POLL_INTERVAL_MS    = 15_000L // 15초 GPS 폴링 간격 (지하철 출구 타이밍 대응)
         const val GPS_LOG_INTERVAL_MS = 30_000L // 서버 로그 전송 간격 (시간창 내에서만, 30초 1회)
         const val GPS_CACHE_TTL_MS    = 300_000L // 마지막 GPS 캐시 유효 시간 (5분, 지하 구간 대응)
+        const val SUBWAY_SPEED_MPS    = 9.0      // 지하철 평균 속도 약 32km/h (정차 포함)
+        const val MOVING_THRESHOLD_MPS = 2.0    // 이 속도(m/s ≈ 7km/h) 이상이면 이동 중으로 판단
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -36,10 +38,11 @@ class WakeMeService : Service() {
     @Volatile private var lastGpsPollLogTime = 0L
 
     // 마지막 수신 GPS 위치 캐시 (지하 구간 GPS 단절 대응)
-    @Volatile private var lastKnownLat  = Double.NaN
-    @Volatile private var lastKnownLng  = Double.NaN
-    @Volatile private var lastKnownAcc  = Float.MAX_VALUE
-    @Volatile private var lastKnownTime = 0L
+    @Volatile private var lastKnownLat   = Double.NaN
+    @Volatile private var lastKnownLng   = Double.NaN
+    @Volatile private var lastKnownAcc   = Float.MAX_VALUE
+    @Volatile private var lastKnownTime  = 0L
+    @Volatile private var lastKnownSpeed = 0f  // m/s, GPS 끊기 직전 속도
 
     // 지하 구간 fallback 타이머
     private var gpsTimeoutHandler: android.os.Handler? = null
@@ -198,10 +201,13 @@ class WakeMeService : Service() {
                 val loc = result.lastLocation ?: return
 
                 // ── GPS 위치 캐시 갱신 ──────────────────────────────────
-                lastKnownLat  = loc.latitude
-                lastKnownLng  = loc.longitude
-                lastKnownAcc  = loc.accuracy
-                lastKnownTime = System.currentTimeMillis()
+                lastKnownLat   = loc.latitude
+                lastKnownLng   = loc.longitude
+                lastKnownAcc   = loc.accuracy
+                lastKnownTime  = System.currentTimeMillis()
+                // loc.speed: Android FusedLocationProvider가 제공하는 순간 속도 (m/s)
+                // hasSpeed() false이면 0으로 처리
+                lastKnownSpeed = if (loc.hasSpeed()) loc.speed else 0f
 
                 // fallback 타이머 리셋 (GPS가 다시 잡혔으므로)
                 rescheduleGpsFallback(waypoints, routeDepartMap)
@@ -231,10 +237,16 @@ class WakeMeService : Service() {
     }
 
     /**
-     * GPS 단절 감지 fallback 타이머 재설정.
-     * GPS가 [POLL_INTERVAL_MS * 3] 이상 수신되지 않으면
-     * 마지막 캐시 위치로 waypoint 체크를 수행한다 (지하 구간 대응).
-     * 캐시가 GPS_CACHE_TTL_MS(5분)보다 오래됐으면 동작 안 함.
+     * GPS 단절 감지 fallback — 데드 레커닝(Dead Reckoning).
+     *
+     * GPS가 [POLL_INTERVAL_MS * 3 = 45초] 이상 수신되지 않으면,
+     * 마지막 수신 위치에서 경과 시간 × 지하철 속도(SUBWAY_SPEED_MPS)만큼
+     * 목적지 방향으로 이동했다고 가정한 추정 위치를 계산해 waypoint 체크를 계속한다.
+     *
+     * 예) GPS 끊긴 시점이 목적지 2정거장 전 → 1정거장 분 시간 경과
+     *     → 1정거장 거리만큼 목적지 방향으로 이동한 위치로 계산
+     *
+     * 캐시가 GPS_CACHE_TTL_MS(5분)보다 오래됐으면 중단.
      */
     private fun rescheduleGpsFallback(
         waypoints:      List<Waypoint>,
@@ -242,8 +254,8 @@ class WakeMeService : Service() {
     ) {
         gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
 
-        val fallbackDelayMs = POLL_INTERVAL_MS * 3   // 45초 무응답 시 fallback 실행
-        val fallbackInterval = 30_000L                // fallback 이후 30초마다 재시도
+        val fallbackDelayMs  = POLL_INTERVAL_MS * 3  // 45초 무응답 → fallback 시작
+        val fallbackInterval = 30_000L               // 이후 30초마다 재추정
 
         fun scheduleNext() {
             val r = Runnable {
@@ -251,7 +263,7 @@ class WakeMeService : Service() {
                 val cacheAgeMs = now - lastKnownTime
 
                 if (lastKnownLat.isNaN() || cacheAgeMs > GPS_CACHE_TTL_MS) {
-                    android.util.Log.d("WAKE_GPS", "GPS 캐시 없음 또는 만료 → fallback 중단")
+                    android.util.Log.d("WAKE_GPS", "GPS 캐시 없음 또는 만료(${cacheAgeMs / 1000}초) → fallback 중단")
                     return@Runnable
                 }
 
@@ -260,11 +272,46 @@ class WakeMeService : Service() {
                 }
                 if (!anyInWindow) return@Runnable
 
-                android.util.Log.i("WAKE_GPS",
-                    "⚠️ GPS 단절 중 — 캐시 위치(${cacheAgeMs / 1000}초 전)로 체크: $lastKnownLat, $lastKnownLng")
+                // ── 데드 레커닝 추정 위치 계산 ────────────────────────────
+                // 조건: GPS 끊기 직전 실제로 이동 중이었을 때만 이동 거리를 합산
+                val wasMoving   = lastKnownSpeed >= MOVING_THRESHOLD_MPS
+                val destination = waypoints.firstOrNull { it.type == "destination" }
 
-                checkNearbyWaypoints(lastKnownLat, lastKnownLng, waypoints, routeDepartMap)
-                sendGpsPollLogThrottled(lastKnownLat, lastKnownLng, lastKnownAcc, waypoints, routeDepartMap, isCached = true)
+                val (estLat, estLng) = when {
+                    // 이동 중 + 목적지 있음 → 데드레커닝
+                    wasMoving && destination != null -> {
+                        val elapsedSec      = cacheAgeMs / 1000.0
+                        val travelledMeters = elapsedSec * SUBWAY_SPEED_MPS
+
+                        // 목적지까지 남은 거리
+                        val remainingM = haversineMeters(lastKnownLat, lastKnownLng, destination.lat, destination.lng)
+
+                        // 오버슈팅 방지: 목적지 거리를 넘지 않도록
+                        val moveMeters = minOf(travelledMeters, remainingM)
+
+                        val estimated = projectPosition(
+                            lastKnownLat, lastKnownLng,
+                            destination.lat, destination.lng,
+                            moveMeters,
+                        )
+
+                        android.util.Log.i("WAKE_GPS",
+                            "⚠️ GPS 단절 ${cacheAgeMs / 1000}초 [이동중 ${lastKnownSpeed}m/s] — 데드레커닝: " +
+                            "이동추정 ${moveMeters.toInt()}m / 남은거리 ${remainingM.toInt()}m → " +
+                            "(${estimated.first}, ${estimated.second})")
+
+                        estimated
+                    }
+                    // 정지 중이었거나 destination 없음 → 마지막 위치 그대로 유지
+                    else -> {
+                        android.util.Log.i("WAKE_GPS",
+                            "⚠️ GPS 단절 ${cacheAgeMs / 1000}초 [${if (!wasMoving) "정지중 ${lastKnownSpeed}m/s" else "destination 없음"}] — 마지막 위치 유지")
+                        Pair(lastKnownLat, lastKnownLng)
+                    }
+                }
+
+                checkNearbyWaypoints(estLat, estLng, waypoints, routeDepartMap)
+                sendGpsPollLogThrottled(estLat, estLng, -1f, waypoints, routeDepartMap, isCached = true)
 
                 // 다음 fallback 예약
                 gpsTimeoutRunnable = Runnable { scheduleNext() }
@@ -275,6 +322,42 @@ class WakeMeService : Service() {
         }
 
         scheduleNext()
+    }
+
+    /**
+     * 시작점(startLat, startLng)에서 목표점(targetLat, targetLng) 방향으로
+     * distanceM 미터 이동했을 때의 추정 위치를 반환한다.
+     *
+     * Haversine 역산(destination point formula) 사용.
+     */
+    private fun projectPosition(
+        startLat: Double, startLng: Double,
+        targetLat: Double, targetLng: Double,
+        distanceM: Double,
+    ): Pair<Double, Double> {
+        val R = 6_371_000.0
+        val d = distanceM / R  // 각도(rad)
+
+        val lat1 = Math.toRadians(startLat)
+        val lng1 = Math.toRadians(startLng)
+        val lat2 = Math.toRadians(targetLat)
+        val lng2 = Math.toRadians(targetLng)
+
+        // 출발 → 목적지 방향 bearing
+        val dLng    = lng2 - lng1
+        val bearing = atan2(
+            sin(dLng) * cos(lat2),
+            cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
+        )
+
+        // d 거리만큼 bearing 방향으로 이동한 새 좌표
+        val newLat = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing))
+        val newLng = lng1 + atan2(
+            sin(bearing) * sin(d) * cos(lat1),
+            cos(d) - sin(lat1) * sin(newLat)
+        )
+
+        return Pair(Math.toDegrees(newLat), Math.toDegrees(newLng))
     }
 
     // ── 거리 체크 ──────────────────────────────────────────────────
@@ -361,7 +444,7 @@ class WakeMeService : Service() {
     private fun sendGpsPollLogThrottled(
         lat:            Double,
         lng:            Double,
-        accuracy:       Float,
+        accuracy:       Number,   // Float(실측) 또는 -1f(데드레커닝)
         waypoints:      List<Waypoint>,
         routeDepartMap: Map<String, String>,
         isCached:       Boolean = false,
