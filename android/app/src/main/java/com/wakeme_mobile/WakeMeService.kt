@@ -267,8 +267,8 @@ class WakeMeService : Service() {
                     return@Runnable
                 }
 
-                val anyInWindow = routeDepartMap.values.any {
-                    WakeMeGeofenceReceiver.isWithinServiceWindow(it)
+                val anyInWindow = routeDepartMap.values.any { departTime ->
+                    departTime.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(departTime)
                 }
                 if (!anyInWindow) return@Runnable
 
@@ -450,8 +450,10 @@ class WakeMeService : Service() {
         isCached:       Boolean = false,
     ) {
         // ① 시간창 외부이면 전송 안 함
-        val anyInWindow = routeDepartMap.values.any {
-            WakeMeGeofenceReceiver.isWithinServiceWindow(it)
+        // isWithinServiceWindow("") = true (빈 값은 항상 통과) 이므로
+        // departTime이 실제로 설정된 경우에만 시간창 체크
+        val anyInWindow = routeDepartMap.values.any { departTime ->
+            departTime.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(departTime)
         }
         if (!anyInWindow) return
 
