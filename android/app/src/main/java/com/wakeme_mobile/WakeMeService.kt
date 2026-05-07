@@ -34,8 +34,13 @@ class WakeMeService : Service() {
     // 이번 서비스 인스턴스에서 이미 알림 보낸 waypoint ID 집합 (중복 방지)
     private val notifiedWaypoints = mutableSetOf<String>()
 
-    // 서버 GPS 로그 마지막 전송 시각 (30초 throttle)
-    @Volatile private var lastGpsPollLogTime = 0L
+    // 서버 GPS 로그 마지막 전송 시각 (SharedPreferences에 저장 — 서비스 재시작해도 유지)
+    private val lastGpsPollLogTime: Long
+        get() = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+                    .getLong("last_gps_poll_log_time", 0L)
+    private fun saveGpsPollLogTime(t: Long) =
+        getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putLong("last_gps_poll_log_time", t).apply()
 
     // 마지막 수신 GPS 위치 캐시 (지하 구간 GPS 단절 대응)
     @Volatile private var lastKnownLat   = Double.NaN
@@ -457,10 +462,10 @@ class WakeMeService : Service() {
         }
         if (!anyInWindow) return
 
-        // ② 30초 throttle
+        // ② 30초 throttle (SharedPreferences 기반 — 서비스 재시작 후에도 유지)
         val now = System.currentTimeMillis()
         if (now - lastGpsPollLogTime < GPS_LOG_INTERVAL_MS) return
-        lastGpsPollLogTime = now
+        saveGpsPollLogTime(now)
 
         val prefs  = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
         val userId = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
