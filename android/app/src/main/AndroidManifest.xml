@@ -83,5 +83,10 @@
             android:name="com.wakeme_mobile.WakeMeWatchdogReceiver"
             android:exported="false" />
 
+        <!-- 시간창 시작 알람: departTime - 10분에 GPS 폴링 자동 시작 -->
+        <receiver
+            android:name="com.wakeme_mobile.WakeMeWindowStartReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>

@@ -27,6 +27,8 @@ import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, RouteSegment, TransportMode, BusStop } from '../types';
 import { searchStops, fetchNearbyStops, fetchRoutesByStop, fetchSubwayStations, SubwayStation } from '../api/busApi';
+import { RestApi } from '../api/RestApi';
+// Geolocation import 제거 (주소 검색으로 대체)
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteRegister'>;
 
@@ -645,6 +647,13 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
   const [routeName, setRouteName] = useState('');
   const [hour, setHour] = useState('08');
   const [minute, setMinute] = useState('00');
+  const [finalDest, setFinalDest] = useState<{
+    name: string; lat: number; lng: number;
+  } | null>(null);
+  const [addrModal, setAddrModal]     = useState(false);
+  const [addrQuery, setAddrQuery]     = useState('');
+  const [addrResults, setAddrResults] = useState<{ roadAddress: string; jibunAddress: string; lat: number; lng: number }[]>([]);
+  const [addrLoading, setAddrLoading] = useState(false);
   const [debugLog, setDebugLog] = useState<string[]>([]);
   const log = (msg: string) => setDebugLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 9)]);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -673,6 +682,13 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
         end_station_id: seg.end_station_id,
       })),
     );
+    if (existingRoute.final_dest_lat && existingRoute.final_dest_lng) {
+      setFinalDest({
+        name: existingRoute.final_dest_name ?? '최종 목적지',
+        lat:  existingRoute.final_dest_lat,
+        lng:  existingRoute.final_dest_lng,
+      });
+    }
   }, [editingRouteId]);
 
   const [stopModal, setStopModal] = useState<{
@@ -757,6 +773,36 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
     );
   };
 
+  const openAddrModal = () => {
+    setAddrQuery('');
+    setAddrResults([]);
+    setAddrModal(true);
+  };
+
+  const searchAddress = async () => {
+    if (!addrQuery.trim()) return;
+    setAddrLoading(true);
+    try {
+      const res = await RestApi.get<{ addresses: { roadAddress: string; jibunAddress: string; lat: number; lng: number }[] }>(
+        `/api/geocode?query=${encodeURIComponent(addrQuery.trim())}`,
+      );
+      setAddrResults(res.addresses ?? []);
+      if ((res.addresses ?? []).length === 0) {
+        Alert.alert('검색 결과 없음', '다른 주소로 다시 검색해보세요.');
+      }
+    } catch (e: any) {
+      Alert.alert('오류', `주소 검색 실패: ${e.message}`);
+    } finally {
+      setAddrLoading(false);
+    }
+  };
+
+  const selectAddress = (item: { roadAddress: string; jibunAddress: string; lat: number; lng: number }) => {
+    const name = item.roadAddress || item.jibunAddress;
+    setFinalDest({ name, lat: item.lat, lng: item.lng });
+    setAddrModal(false);
+  };
+
   const handleSave = async () => {
     log(`handleSave 호출됨 user=${user?.id ?? 'null'} editingRouteId=${editingRouteId ?? 'none'}`);
     if (!routeName.trim()) { Alert.alert('알림', '경로 이름을 입력해주세요.'); return; }
@@ -771,10 +817,10 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
     log(`저장 시작 - 세그먼트 ${segments.length}개`);
     try {
       if (editingRouteId) {
-        await updateRoute(editingRouteId, routeName.trim(), `${hour}:${minute}`, segments);
+        await updateRoute(editingRouteId, routeName.trim(), `${hour}:${minute}`, segments, finalDest);
         log('수정 성공 ✅');
       } else {
-        await addRoute(user!.id, routeName.trim(), `${hour}:${minute}`, segments);
+        await addRoute(user!.id, routeName.trim(), `${hour}:${minute}`, segments, finalDest);
         log('저장 성공 ✅');
       }
       navigation.goBack();
@@ -899,6 +945,29 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
           <Text style={styles.addSegBtnText}>+ 구간 추가 (환승)</Text>
         </TouchableOpacity>
 
+        {/* 최종 목적지 */}
+        <Text style={[styles.label, { marginTop: 20 }]}>최종 목적지 (선택)</Text>
+        <Text style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+          정류장/역 하차 후 실제로 도착할 곳 — 도착하면 모니터링이 자동 종료됩니다
+        </Text>
+        {finalDest ? (
+          <View style={styles.finalDestCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.finalDestName}>📍 {finalDest.name}</Text>
+              <Text style={styles.finalDestCoords}>
+                {finalDest.lat.toFixed(5)}, {finalDest.lng.toFixed(5)}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => setFinalDest(null)}>
+              <Text style={{ color: '#E53E3E', fontWeight: '600', paddingLeft: 12 }}>삭제</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.locationBtn} onPress={openAddrModal}>
+            <Text style={styles.locationBtnText}>🔍 주소 검색으로 목적지 설정</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={false}>
           {loading ? (
             <ActivityIndicator color="#fff" />
@@ -943,6 +1012,59 @@ export default function RouteRegisterScreen({ route, navigation }: Props) {
         onSelect={handleSubwayStationSelect}
         onClose={() => setSubwayPicker(s => ({ ...s, visible: false }))}
       />
+
+      {/* 주소 검색 모달 */}
+      <Modal visible={addrModal} animationType="slide" onRequestClose={() => setAddrModal(false)}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.addrModal}>
+            {/* 헤더 */}
+            <View style={styles.addrHeader}>
+              <Text style={styles.addrHeaderTitle}>목적지 주소 검색</Text>
+              <TouchableOpacity onPress={() => setAddrModal(false)}>
+                <Text style={{ fontSize: 16, color: '#555' }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* 검색 입력 */}
+            <View style={styles.addrSearchRow}>
+              <TextInput
+                style={styles.addrInput}
+                placeholder="주소 또는 장소명 입력 (예: 강남구청)"
+                placeholderTextColor="#aaa"
+                value={addrQuery}
+                onChangeText={setAddrQuery}
+                onSubmitEditing={searchAddress}
+                returnKeyType="search"
+                autoFocus
+              />
+              <TouchableOpacity style={styles.addrSearchBtn} onPress={searchAddress} disabled={addrLoading}>
+                {addrLoading
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <Text style={styles.addrSearchBtnText}>검색</Text>
+                }
+              </TouchableOpacity>
+            </View>
+
+            {/* 결과 목록 */}
+            <FlatList
+              data={addrResults}
+              keyExtractor={(_, i) => String(i)}
+              renderItem={({ item }) => (
+                <TouchableOpacity style={styles.addrItem} onPress={() => selectAddress(item)}>
+                  <Text style={styles.addrRoad}>{item.roadAddress || '(도로명 없음)'}</Text>
+                  {item.jibunAddress ? (
+                    <Text style={styles.addrJibun}>{item.jibunAddress}</Text>
+                  ) : null}
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                !addrLoading && addrResults.length === 0 && addrQuery.length > 0 ? null : null
+              }
+              contentContainerStyle={{ paddingBottom: 40 }}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </>
   );
 }
@@ -995,6 +1117,18 @@ const styles = StyleSheet.create({
   addSegBtnText: { color: '#1A73E8', fontWeight: '600', fontSize: 14 },
   saveBtn: { height: 52, backgroundColor: '#1A73E8', borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  finalDestCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#EBF8FF', borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: '#BEE3F8', marginBottom: 16,
+  },
+  finalDestName: { fontSize: 15, fontWeight: '600', color: '#2D3748' },
+  finalDestCoords: { fontSize: 11, color: '#718096', marginTop: 2 },
+  locationBtn: {
+    height: 48, borderRadius: 10, borderWidth: 1.5, borderColor: '#1A73E8',
+    alignItems: 'center', justifyContent: 'center', marginBottom: 16,
+  },
+  locationBtnText: { color: '#1A73E8', fontWeight: '600', fontSize: 14 },
   lineRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   lineBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 2 },
   lineBtnText: { fontSize: 13, fontWeight: '700', color: '#333' },
@@ -1005,6 +1139,34 @@ const styles = StyleSheet.create({
   cityTabActive: { backgroundColor: '#1A73E8', borderColor: '#1A73E8' },
   cityTabText: { fontSize: 13, fontWeight: '600', color: '#555' },
   cityTabTextActive: { color: '#fff', fontWeight: '700' },
+  // 주소 검색 모달
+  addrModal: { flex: 1, backgroundColor: '#F5F7FA' },
+  addrHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 20, paddingTop: 56, paddingBottom: 16,
+    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#EEE',
+  },
+  addrHeaderTitle: { fontSize: 18, fontWeight: '700', color: '#222' },
+  addrSearchRow: {
+    flexDirection: 'row', gap: 8,
+    paddingHorizontal: 16, paddingVertical: 12,
+    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#EEE',
+  },
+  addrInput: {
+    flex: 1, height: 44, backgroundColor: '#F5F5F5', borderRadius: 10,
+    paddingHorizontal: 14, fontSize: 15, color: '#222',
+  },
+  addrSearchBtn: {
+    height: 44, paddingHorizontal: 16, backgroundColor: '#1A73E8',
+    borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+  },
+  addrSearchBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  addrItem: {
+    backgroundColor: '#fff', paddingHorizontal: 20, paddingVertical: 14,
+    borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+  },
+  addrRoad: { fontSize: 15, fontWeight: '600', color: '#222' },
+  addrJibun: { fontSize: 12, color: '#888', marginTop: 3 },
 });
 
 // WheelPicker 스타일

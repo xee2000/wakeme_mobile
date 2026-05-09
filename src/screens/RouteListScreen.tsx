@@ -15,6 +15,7 @@ import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
 import { RootStackParamList, Route } from '../types';
 import { scheduleDepartureNotification } from '../utils/notifications';
+import { ensureServiceRunning } from '../utils/nativeService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteList'>;
 
@@ -33,6 +34,10 @@ export default function RouteListScreen({ navigation }: Props) {
     routes.forEach(r => {
       scheduleDepartureNotification(r.id, r.name, r.depart_time).catch(e => console.warn('[WAKE] 출발 알림 예약 실패:', e));
     });
+    // 캐시된 모든 경로를 네이티브 서비스에 복원 (앱 재시작 후 자동 모니터링 재개)
+    if (routes.length > 0) {
+      ensureServiceRunning();
+    }
   }, [routes]);
 
   const handleDelete = (route: Route) => {

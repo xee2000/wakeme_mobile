@@ -177,6 +177,27 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       console.warn('[WAKE][CRITICAL] waypoints 없음 → 지오펜스 미등록');
     }
 
+    // ── 최종 목적지 waypoint 추가 (설정된 경우) ────────────────────
+    // 정류장/역 하차 후 실제 목적지(집·회사 등)에 도달하면 모니터링 자동 종료
+    if (targetRoute.final_dest_lat && targetRoute.final_dest_lng) {
+      // 기존 마지막 transit waypoint는 type을 'transfer'로 변경 (서비스 종료 막기)
+      if (waypoints.length > 0) {
+        waypoints[waypoints.length - 1] = {
+          ...waypoints[waypoints.length - 1],
+          type: 'transfer',
+        };
+      }
+      waypoints.push({
+        id:   'wp_final_dest',
+        lat:  targetRoute.final_dest_lat,
+        lng:  targetRoute.final_dest_lng,
+        name: targetRoute.final_dest_name ?? '최종 목적지',
+        type: 'destination',  // destination 타입 = 도달 시 서비스 종료
+      });
+      console.log('[WAKE][WAYPOINT] 최종 목적지 추가:', targetRoute.final_dest_name,
+        targetRoute.final_dest_lat, targetRoute.final_dest_lng);
+    }
+
     // ── 다중 경로 모니터링 시작 ───────────────────────────────────
     // startStopId/startStopName은 첫 구간이 버스일 때만 저장
     // (지하철 시작 경로에 저장하면 워치독이 잘못된 출발 알람을 등록함)

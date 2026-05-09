@@ -20,7 +20,8 @@ class WakeMeService : Service() {
         const val CHANNEL_ALERT       = "wakeme-alert"
         const val CHANNEL_DESTINATION = "wakeme-destination"  // 하차 전용 채널 (강진동)
         const val FG_NOTIF_ID         = 9001
-        const val ALERT_RADIUS_M      = 500.0   // 알림 반경 (미터)
+        const val ALERT_RADIUS_M      = 500.0   // 환승/하차 알림 반경 (미터)
+        const val FINAL_DEST_RADIUS_M = 50.0    // 최종 목적지(주소) 도착 반경 (미터)
         const val POLL_INTERVAL_MS    = 15_000L // 15초 GPS 폴링 간격 (지하철 출구 타이밍 대응)
         const val GPS_LOG_INTERVAL_MS = 30_000L // 서버 로그 전송 간격 (시간창 내에서만, 30초 1회)
         const val GPS_CACHE_TTL_MS    = 300_000L // 마지막 GPS 캐시 유효 시간 (5분, 지하 구간 대응)
@@ -31,8 +32,47 @@ class WakeMeService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
 
-    // 이번 서비스 인스턴스에서 이미 알림 보낸 waypoint ID 집합 (중복 방지)
-    private val notifiedWaypoints = mutableSetOf<String>()
+    /**
+     * 이미 알림 보낸 waypoint ID 집합.
+     * 날짜(YYYY-MM-DD)별로 SharedPreferences에 영구 저장해
+     * 서비스 재시작 후에도 중복 알림을 방지하고, 다음 날 자동 초기화.
+     */
+    private val notifiedWaypoints: MutableSet<String> by lazy { loadNotifiedWaypoints() }
+
+    private fun todayStr(): String {
+        val cal = java.util.Calendar.getInstance()
+        return "%04d-%02d-%02d".format(
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    private fun loadNotifiedWaypoints(): MutableSet<String> {
+        val prefs   = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val savedDate = prefs.getString("notified_date", "")
+        val today     = todayStr()
+        return if (savedDate == today) {
+            // 오늘 날짜와 일치 → 저장된 목록 복원
+            val raw = prefs.getString("notified_waypoints", "") ?: ""
+            android.util.Log.i("WAKE", "notifiedWaypoints 복원: $raw")
+            if (raw.isEmpty()) mutableSetOf()
+            else raw.split(",").toMutableSet()
+        } else {
+            // 날짜가 다르면 초기화
+            android.util.Log.i("WAKE", "새로운 날짜 → notifiedWaypoints 초기화 (이전: $savedDate)")
+            prefs.edit().putString("notified_date", today).putString("notified_waypoints", "").apply()
+            mutableSetOf()
+        }
+    }
+
+    private fun persistNotifiedWaypoints() {
+        val prefs = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("notified_date", todayStr())
+            .putString("notified_waypoints", notifiedWaypoints.joinToString(","))
+            .apply()
+    }
 
     // 서버 GPS 로그 마지막 전송 시각 (SharedPreferences에 저장 — 서비스 재시작해도 유지)
     private val lastGpsPollLogTime: Long
@@ -105,6 +145,22 @@ class WakeMeService : Service() {
         }
 
         val routeDepartMap = WakeMeGeofenceReceiver.buildRouteDepartMap(allRoutesJson)
+
+        // ─ 시간창 체크: 모든 경로가 시간창 밖이면 서비스 즉시 종료
+        // (앱 재시작 시 캐시된 경로가 로드되더라도, 실제 필요한 시각에만 GPS 사용)
+        val anyInWindow = if (routeDepartMap.isEmpty()) {
+            true  // 경로 정보 없으면 일단 유지 (하위 호환)
+        } else {
+            routeDepartMap.values.any { dt ->
+                dt.isBlank() || WakeMeGeofenceReceiver.isWithinServiceWindow(dt)
+            }
+        }
+        if (!anyInWindow) {
+            android.util.Log.i("WAKE", "모든 경로 시간창 밖 → 서비스 미시작 (워치독이 시간창 열릴 때 재시작)")
+            stopForeground(true)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         // 목적지 정보로 포그라운드 알림 업데이트
         startForeground(FG_NOTIF_ID, buildTrackingNotification(destText))
@@ -217,14 +273,22 @@ class WakeMeService : Service() {
                 // fallback 타이머 리셋 (GPS가 다시 잡혔으므로)
                 rescheduleGpsFallback(waypoints, routeDepartMap)
 
-                // 시간창 포함 여부 확인 (로그 목적)
-                val anyInWindow = routeDepartMap.values.any {
-                    WakeMeGeofenceReceiver.isWithinServiceWindow(it)
+                // ── 시간창 만료 체크: 창이 닫히면 GPS 폴링 중단 ───────────
+                // (서비스 자체는 유지, AlarmManager가 다음 창에 다시 깨움)
+                val anyInWindow = routeDepartMap.values.any { dt ->
+                    dt.isBlank() || WakeMeGeofenceReceiver.isWithinServiceWindow(dt)
                 }
-                if (anyInWindow) {
-                    android.util.Log.d("WAKE_GPS",
-                        "위치 수신: ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
+                if (!anyInWindow) {
+                    android.util.Log.i("WAKE_GPS", "⏰ 시간창 종료 → GPS 폴링 중지 (서비스 유지, 다음 AlarmManager 대기)")
+                    fusedLocationClient.removeLocationUpdates(locationCallback!!)
+                    gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
+                    stopForeground(true)
+                    stopSelf()
+                    return
                 }
+
+                android.util.Log.d("WAKE_GPS",
+                    "위치 수신: ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
 
                 checkNearbyWaypoints(loc.latitude, loc.longitude, waypoints, routeDepartMap)
 
@@ -390,17 +454,30 @@ class WakeMeService : Service() {
             }
 
             // Haversine 거리 계산
-            val distM = haversineMeters(myLat, myLng, wp.lat, wp.lng)
-            android.util.Log.d("WAKE_GPS", "${wp.name}: ${distM.toInt()}m / ${ALERT_RADIUS_M.toInt()}m")
+            // 최종 목적지(주소)는 더 좁은 반경 사용 (200m), 나머지는 500m
+            val isFinalDest = wp.id.endsWith("wp_final_dest")
+            val radius = if (isFinalDest) FINAL_DEST_RADIUS_M else ALERT_RADIUS_M
+            val distM  = haversineMeters(myLat, myLng, wp.lat, wp.lng)
+            android.util.Log.d("WAKE_GPS", "${wp.name}: ${distM.toInt()}m / ${radius.toInt()}m${if (isFinalDest) " [최종목적지]" else ""}")
 
-            if (distM <= ALERT_RADIUS_M) {
+            if (distM <= radius) {
                 android.util.Log.i("WAKE_GPS", "✅ 진입 감지: ${wp.name} (${distM.toInt()}m) type=${wp.type} nextMode=${wp.nextMode}")
                 notifiedWaypoints.add(wp.id)
+                persistNotifiedWaypoints()  // 서비스 재시작 후에도 중복 알림 방지
 
                 when (wp.type) {
                     "destination" -> {
                         sendDestinationAlert(wp.id.hashCode(), "🚨 지금 내리세요!", "${wp.name} 하차 준비하세요")
                         updateForegroundNotification("🚨 지금 내리세요! — ${wp.name}")
+                        // 목적지 도착 → GPS 폴링 종료 (2초 후 서비스 자동 종료)
+                        // 2초 대기: 알림이 화면에 뜰 시간 확보
+                        android.util.Log.i("WAKE_GPS", "🏁 목적지 도착: ${wp.name} → 2초 후 서비스 종료")
+                        gpsTimeoutHandler?.postDelayed({
+                            locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+                            gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
+                            stopForeground(true)
+                            stopSelf()
+                        }, 2_000L)
                     }
                     "transfer" -> when (wp.nextMode) {
                         "bus" -> {

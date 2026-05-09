@@ -4,8 +4,10 @@ import { Waypoint } from '../utils/nativeService';
 
 export type MonitoringStatus = 'idle' | 'active' | 'done';
 
-const storage   = new MMKV({ id: 'monitoring' });
+const storage    = new MMKV({ id: 'monitoring' });
 const ROUTES_KEY = 'wakeme_active_routes';
+// 한 번이라도 알림 시작한 경로 영구 캐시 (앱 재시작 시 자동 복원용)
+const CACHE_KEY  = 'wakeme_route_cache';
 
 // ── 활성 경로 한 건 ────────────────────────────────────────────────
 export interface ActiveRouteItem {
@@ -41,6 +43,28 @@ export function loadMonitoringState(): ActiveRouteItem | null {
   return loadActiveRoutes()[0] ?? null;
 }
 export function clearMonitoringState() { clearActiveRoutes(); }
+
+// ── 경로 영구 캐시 (알림 시작 경로 자동 복원) ─────────────────────────
+/** 알림 시작 시 해당 경로를 영구 캐시에 저장 */
+export function saveToRouteCache(item: ActiveRouteItem) {
+  const raw = storage.getString(CACHE_KEY);
+  const cache: ActiveRouteItem[] = raw ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
+  const updated = [...cache.filter(r => r.routeId !== item.routeId), item];
+  storage.set(CACHE_KEY, JSON.stringify(updated));
+}
+
+/** 영구 캐시에서 모든 경로 로드 */
+export function loadRouteCache(): ActiveRouteItem[] {
+  const raw = storage.getString(CACHE_KEY);
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch { return []; }
+}
+
+/** 사용자가 명시적으로 해제한 경로를 캐시에서 삭제 */
+export function removeFromRouteCache(routeId: string) {
+  const cache = loadRouteCache();
+  storage.set(CACHE_KEY, JSON.stringify(cache.filter(r => r.routeId !== routeId)));
+}
 
 // ── Zustand 스토어 ────────────────────────────────────────────────
 interface MonitoringState {

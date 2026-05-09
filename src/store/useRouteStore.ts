@@ -16,6 +16,7 @@ interface RouteState {
     name: string,
     departTime: string,
     segments: Omit<RouteSegment, 'id' | 'route_id'>[],
+    finalDest?: { name: string; lat: number; lng: number } | null,
   ) => Promise<void>;
 
   // 경로 수정
@@ -24,6 +25,7 @@ interface RouteState {
     name: string,
     departTime: string,
     segments: Omit<RouteSegment, 'id' | 'route_id'>[],
+    finalDest?: { name: string; lat: number; lng: number } | null,
   ) => Promise<void>;
 
   // 경로 삭제
@@ -45,10 +47,10 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     }
   },
 
-  addRoute: async (userId, name, departTime, segments) => {
+  addRoute: async (userId, name, departTime, segments, finalDest) => {
     set({ loading: true, error: null });
     try {
-      const newRoute = await saveRoute(userId, name, departTime, segments);
+      const newRoute = await saveRoute(userId, name, departTime, segments, finalDest);
       set(state => ({ routes: [newRoute, ...state.routes], loading: false }));
     } catch (e: any) {
       set({ error: e.message, loading: false });
@@ -56,10 +58,10 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     }
   },
 
-  updateRoute: async (routeId, name, departTime, segments) => {
+  updateRoute: async (routeId, name, departTime, segments, finalDest) => {
     set({ loading: true, error: null });
     try {
-      const updated = await apiUpdateRoute(routeId, name, departTime, segments);
+      const updated = await apiUpdateRoute(routeId, name, departTime, segments, finalDest);
       set(state => ({
         routes: state.routes.map(r => (r.id === routeId ? updated : r)),
         loading: false,

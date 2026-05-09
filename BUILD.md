@@ -72,6 +72,11 @@ export WAKEME_KEY_PASSWORD="키_비밀번호"
 
 ```bash
 cd android && ./gradlew assembleRelease
+
+//볼륨 로그보는법
+//ssh접속
+fly ssh console -a wakeme-api
+cd /app/logs에서 날짜별 파일을 tail로 까본다
 ```
 
 ### 아키텍처별 분리 APK (파일 크기 최소화, 권장)

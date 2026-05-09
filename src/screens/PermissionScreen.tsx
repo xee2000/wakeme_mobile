@@ -64,56 +64,76 @@ export default function PermissionScreen({ navigation }: Props) {
 
   const requestAll = async () => {
     setLoading(true);
+
+    // 전체 10초 타임아웃 — 어떤 단계에서 막혀도 Login으로 이동
+    const timeoutId = setTimeout(() => {
+      console.warn('[WAKE] 권한 요청 타임아웃 → Login으로 이동');
+      storage.set(PERMISSIONS_DONE_KEY, true);
+      setLoading(false);
+      navigation.replace('Login');
+    }, 10_000);
+
     try {
       if (Platform.OS === 'android') {
         // 1. 위치 권한
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          {
-            title: '위치 권한 필요',
-            message: '버스 정류장 접근 감지를 위해 정확한 위치 권한이 필요합니다.',
-            buttonPositive: '허용',
-            buttonNegative: '거부',
-          },
-        );
+        try {
+          await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            {
+              title: '위치 권한 필요',
+              message: '버스 정류장 접근 감지를 위해 정확한 위치 권한이 필요합니다.',
+              buttonPositive: '허용',
+              buttonNegative: '거부',
+            },
+          );
+        } catch (e) { console.warn('[WAKE] 위치 권한 오류', e); }
 
         // 2. 백그라운드 위치 (Android 10+)
         if (parseInt(String(Platform.Version), 10) >= 29) {
-          await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
-            {
-              title: '백그라운드 위치 권한 필요',
-              message: '앱이 닫혀 있어도 정류장 접근을 감지하려면 위치를 "항상 허용"으로 설정해주세요.',
-              buttonPositive: '설정 열기',
-              buttonNegative: '나중에',
-            },
-          );
+          try {
+            await PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+              {
+                title: '백그라운드 위치 권한 필요',
+                message: '앱이 닫혀 있어도 정류장 접근을 감지하려면 위치를 "항상 허용"으로 설정해주세요.',
+                buttonPositive: '설정 열기',
+                buttonNegative: '나중에',
+              },
+            );
+          } catch (e) { console.warn('[WAKE] 백그라운드 위치 권한 오류', e); }
         }
       }
 
-      // 3. 알림 권한 (Android 13+)
-      await notifee.requestPermission();
+      // 3. 알림 권한
+      try {
+        await notifee.requestPermission();
+      } catch (e) { console.warn('[WAKE] 알림 권한 오류', e); }
 
-      // 4. 정확한 알람 (Android 12+)
+      // 4. 정확한 알람 (Android 12+) — 설정 화면만 열고 기다리지 않음
       if (Platform.OS === 'android' && parseInt(String(Platform.Version), 10) >= 31) {
-        const settings = await notifee.getNotificationSettings();
-        if (settings.android?.alarm !== AndroidNotificationSetting.ENABLED) {
-          await notifee.openAlarmPermissionSettings();
-          await new Promise(r => setTimeout(r, 800));
-        }
+        try {
+          const settings = await notifee.getNotificationSettings();
+          if (settings.android?.alarm !== AndroidNotificationSetting.ENABLED) {
+            notifee.openAlarmPermissionSettings(); // await 제거 — 설정 화면 열고 바로 진행
+          }
+        } catch (e) { console.warn('[WAKE] 알람 설정 오류', e); }
       }
 
-      // 5. 배터리 최적화 제외 — 앱 직접 요청 다이얼로그 (제조사 설정 화면 아님)
-      if (Platform.OS === 'android' && !isBatteryOptimizationIgnored()) {
-        requestIgnoreBatteryOptimization();
-        await new Promise(r => setTimeout(r, 500));
+      // 5. 배터리 최적화 제외
+      if (Platform.OS === 'android') {
+        try {
+          if (!isBatteryOptimizationIgnored()) {
+            requestIgnoreBatteryOptimization();
+          }
+        } catch (e) { console.warn('[WAKE] 배터리 최적화 오류', e); }
       }
 
       // 완료 플래그 저장 → 다음부터 이 화면 스킵
       storage.set(PERMISSIONS_DONE_KEY, true);
     } catch (e) {
-      console.warn('[WAKE]', e);
+      console.warn('[WAKE] 권한 요청 전체 오류', e);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
       navigation.replace('Login');
     }

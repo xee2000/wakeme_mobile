@@ -33,9 +33,10 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
         // ── 시간창 체크 ──────────────────────────────────────────────
         val departMap = WakeMeGeofenceReceiver.buildRouteDepartMap(allRoutesJson)
         val hasActiveWindow = if (departMap.isEmpty()) {
-            true
+            true  // 경로 정보 없으면 일단 서비스 유지
         } else {
-            departMap.values.any { WakeMeGeofenceReceiver.isWithinServiceWindow(it) }
+            // isNotBlank() 필수: departTime="" 는 isWithinServiceWindow가 true 반환하므로 항상 체크
+            departMap.values.any { dt -> dt.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(dt) }
         }
 
         // GPS 상태 + userId (heartbeat는 시간창과 무관하게 항상 전송)
@@ -69,8 +70,11 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
             }
         }.start()
 
-        // ── 출발 알람 재등록 (1회성 AlarmManager 알람이 만료됐을 수 있으므로 매번 갱신) ──
+        // ── 출발 알람 재등록 (버스 첫 구간 경로: departTime에 버스 도착 알림) ──
         rescheduleDepartureAlarms(context, allRoutesJson)
+
+        // ── 시간창 시작 알람 재등록 (모든 경로: departTime - 10분에 GPS 폴링 시작) ──
+        WakeMeWindowStartReceiver.scheduleAll(context, allRoutesJson)
 
         // ── 다음 알람 자가 체인 예약 (항상 재예약, 경로가 살아있는 한) ──
         scheduleNext(context)

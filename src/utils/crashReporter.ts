@@ -27,6 +27,7 @@ interface CrashPayload {
 
 function buildPayload(error: Error, isFatal: boolean): CrashPayload {
   const store = useMonitoringStore.getState();
+  const activeIds = store.activeRoutes.map(r => r.routeId).join(',') || null;
   return {
     timestamp: new Date().toISOString(),
     message: error.message ?? String(error),
@@ -34,7 +35,7 @@ function buildPayload(error: Error, isFatal: boolean): CrashPayload {
     isFatal,
     platform: Platform.OS,
     platformVersion: Platform.Version,
-    monitoringRouteId: store.routeId,
+    monitoringRouteId: activeIds,
   };
 }
 

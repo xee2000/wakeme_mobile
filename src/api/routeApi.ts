@@ -23,11 +23,19 @@ export async function saveRoute(
   name: string,
   departTime: string,
   segments: Omit<RouteSegment, 'id' | 'route_id'>[],
+  finalDest?: { name: string; lat: number; lng: number } | null,
 ): Promise<Route> {
   // 1. routes 테이블 insert
   const { data: routeData, error: routeErr } = await supabase
     .from('routes')
-    .insert({ user_id: userId, name, depart_time: departTime })
+    .insert({
+      user_id: userId,
+      name,
+      depart_time: departTime,
+      final_dest_name: finalDest?.name ?? null,
+      final_dest_lat:  finalDest?.lat  ?? null,
+      final_dest_lng:  finalDest?.lng  ?? null,
+    })
     .select()
     .single();
 
@@ -52,10 +60,17 @@ export async function updateRoute(
   name: string,
   departTime: string,
   segments: Omit<RouteSegment, 'id' | 'route_id'>[],
+  finalDest?: { name: string; lat: number; lng: number } | null,
 ): Promise<Route> {
   const { data: routeData, error: routeErr } = await supabase
     .from('routes')
-    .update({ name, depart_time: departTime })
+    .update({
+      name,
+      depart_time: departTime,
+      final_dest_name: finalDest?.name ?? null,
+      final_dest_lat:  finalDest?.lat  ?? null,
+      final_dest_lng:  finalDest?.lng  ?? null,
+    })
     .eq('id', routeId)
     .select()
     .single();

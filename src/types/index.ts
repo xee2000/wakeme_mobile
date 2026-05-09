@@ -38,6 +38,10 @@ export interface Route {
   depart_time: string; // "HH:MM"
   segments: RouteSegment[];
   created_at?: string;
+  // 최종 목적지 (정류장/역 이후 실제 도착지 — 설정 시 여기 도착하면 모니터링 자동 종료)
+  final_dest_name?: string | null;
+  final_dest_lat?:  number | null;
+  final_dest_lng?:  number | null;
 }
 
 // 버스 실시간 정류장
