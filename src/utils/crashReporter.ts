@@ -1,14 +1,16 @@
 /**
- * 런타임 크래시/에러를 서버로 전송하는 유틸
+ * 런타임 크래시/에러를 Sentry + 서버 로그로 이중 전송하는 유틸
  *
  * 동작 원리:
- * 1. ErrorUtils.setGlobalHandler — JS uncaught 예외 캡처
- * 2. isFatal 크래시는 MMKV에 저장 → 다음 앱 시작 시 전송 (죽기 전엔 네트워크 보장 안됨)
- * 3. non-fatal 에러는 즉시 fire-and-forget으로 전송
+ * 1. Sentry.init (index.js) — JS + 네이티브 크래시 + OOM 자동 캡처
+ * 2. ErrorUtils.setGlobalHandler — JS uncaught 예외를 서버 로그파일에도 기록
+ * 3. isFatal 크래시는 MMKV에 저장 → 다음 앱 시작 시 서버 전송 보장
  */
 
 import { Platform } from 'react-native';
 import { MMKV } from 'react-native-mmkv';
+import * as Sentry from '@sentry/react-native';
+import DeviceInfo from 'react-native-device-info';
 import { RestApi } from '../api/RestApi';
 import { useMonitoringStore } from '../store/useMonitoringStore';
 
@@ -22,6 +24,7 @@ interface CrashPayload {
   isFatal: boolean;
   platform: string;
   platformVersion: string | number;
+  appVersion: string;
   monitoringRouteId: string | null;
 }
 
@@ -35,12 +38,12 @@ function buildPayload(error: Error, isFatal: boolean): CrashPayload {
     isFatal,
     platform: Platform.OS,
     platformVersion: Platform.Version,
+    appVersion: DeviceInfo.getVersion(),
     monitoringRouteId: activeIds,
   };
 }
 
 function sendPayload(payload: CrashPayload) {
-  // fire-and-forget — 앱 종료 직전이라 완료 보장 안 됨
   fetch(`${RestApi.BASE_URL}/api/log/crash`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -62,7 +65,7 @@ function clearPending() {
   storage.delete(PENDING_KEY);
 }
 
-/** 앱 시작 시 이전 fatal 크래시 로그가 있으면 전송 */
+/** 앱 시작 시 이전 fatal 크래시 로그가 있으면 서버로 전송 */
 export function flushPendingCrashLog() {
   const pending = loadPending();
   if (!pending) return;
@@ -78,14 +81,20 @@ export function initCrashReporter() {
     const fatal = isFatal ?? false;
     const payload = buildPayload(error, fatal);
 
+    // Sentry에도 전송 (네이티브 크래시는 Sentry가 자동으로 처리)
+    Sentry.captureException(error, {
+      level: fatal ? 'fatal' : 'error',
+      extra: {
+        isFatal: fatal,
+        monitoringRouteId: payload.monitoringRouteId,
+      },
+    });
+
     if (fatal) {
-      // fatal: MMKV에 먼저 저장 (다음 시작 시 전송 보장)
       savePending(payload);
     }
-    // 어쨌든 지금도 전송 시도
     sendPayload(payload);
 
-    // 원래 핸들러(React Native 기본 동작) 호출
     previousHandler(error, isFatal);
   });
 }

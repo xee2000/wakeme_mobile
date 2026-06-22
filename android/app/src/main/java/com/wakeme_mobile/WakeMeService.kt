@@ -5,9 +5,12 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
@@ -20,13 +23,11 @@ class WakeMeService : Service() {
         const val CHANNEL_ALERT       = "wakeme-alert"
         const val CHANNEL_DESTINATION = "wakeme-destination"  // 하차 전용 채널 (강진동)
         const val FG_NOTIF_ID         = 9001
-        const val ALERT_RADIUS_M      = 500.0   // 환승/하차 알림 반경 (미터)
+        const val DEFAULT_ALERT_RADIUS_M = 500.0  // 환승/하차 준비 알림 반경 기본값 (미터) — 사용자가 500/700/900/1200 중 선택 가능
         const val FINAL_DEST_RADIUS_M = 50.0    // 최종 목적지(주소) 도착 반경 (미터)
-        const val POLL_INTERVAL_MS    = 15_000L // 15초 GPS 폴링 간격 (지하철 출구 타이밍 대응)
-        const val GPS_LOG_INTERVAL_MS = 30_000L // 서버 로그 전송 간격 (시간창 내에서만, 30초 1회)
-        const val GPS_CACHE_TTL_MS    = 300_000L // 마지막 GPS 캐시 유효 시간 (5분, 지하 구간 대응)
-        const val SUBWAY_SPEED_MPS    = 9.0      // 지하철 평균 속도 약 32km/h (정차 포함)
-        const val MOVING_THRESHOLD_MPS = 2.0    // 이 속도(m/s ≈ 7km/h) 이상이면 이동 중으로 판단
+        const val POLL_INTERVAL_MS    = 5_000L  // 5초 GPS 폴링 간격
+        const val GPS_LOG_INTERVAL_MS = 30_000L // 서버 로그 전송 간격 (30초 1회)
+        const val MAX_ACCURACY_M      = 50f     // 이 값 초과 GPS는 무시 (지상 버스 전용)
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -49,17 +50,14 @@ class WakeMeService : Service() {
     }
 
     private fun loadNotifiedWaypoints(): MutableSet<String> {
-        val prefs   = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs     = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
         val savedDate = prefs.getString("notified_date", "")
         val today     = todayStr()
         return if (savedDate == today) {
-            // 오늘 날짜와 일치 → 저장된 목록 복원
             val raw = prefs.getString("notified_waypoints", "") ?: ""
             android.util.Log.i("WAKE", "notifiedWaypoints 복원: $raw")
-            if (raw.isEmpty()) mutableSetOf()
-            else raw.split(",").toMutableSet()
+            if (raw.isEmpty()) mutableSetOf() else raw.split(",").toMutableSet()
         } else {
-            // 날짜가 다르면 초기화
             android.util.Log.i("WAKE", "새로운 날짜 → notifiedWaypoints 초기화 (이전: $savedDate)")
             prefs.edit().putString("notified_date", today).putString("notified_waypoints", "").apply()
             mutableSetOf()
@@ -67,14 +65,14 @@ class WakeMeService : Service() {
     }
 
     private fun persistNotifiedWaypoints() {
-        val prefs = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
+        getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
             .putString("notified_date", todayStr())
             .putString("notified_waypoints", notifiedWaypoints.joinToString(","))
             .apply()
     }
 
-    // 서버 GPS 로그 마지막 전송 시각 (SharedPreferences에 저장 — 서비스 재시작해도 유지)
+    // 서버 GPS 로그 마지막 전송 시각
     private val lastGpsPollLogTime: Long
         get() = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
                     .getLong("last_gps_poll_log_time", 0L)
@@ -82,34 +80,42 @@ class WakeMeService : Service() {
         getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putLong("last_gps_poll_log_time", t).apply()
 
-    // 마지막 수신 GPS 위치 캐시 (지하 구간 GPS 단절 대응)
-    @Volatile private var lastKnownLat   = Double.NaN
-    @Volatile private var lastKnownLng   = Double.NaN
-    @Volatile private var lastKnownAcc   = Float.MAX_VALUE
-    @Volatile private var lastKnownTime  = 0L
-    @Volatile private var lastKnownSpeed = 0f  // m/s, GPS 끊기 직전 속도
+    // 마지막 정상 GPS 위치
+    @Volatile private var lastKnownLat  = Double.NaN
+    @Volatile private var lastKnownLng  = Double.NaN
+    @Volatile private var lastKnownAcc  = Float.MAX_VALUE
+    @Volatile private var lastKnownTime = 0L
 
-    // 지하 구간 fallback 타이머
-    private var gpsTimeoutHandler: android.os.Handler? = null
-    private var gpsTimeoutRunnable: Runnable? = null
+    // 경로별 운행 요일 맵 { routeId → daysOfWeek }
+    private var routeDaysMap: Map<String, List<Int>> = emptyMap()
+
+    // 이어폰 연결 시 TTS 음성 안내
+    private var tts: TextToSpeech? = null
 
     override fun onCreate() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         createNotificationChannels()
+
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = java.util.Locale.KOREAN
+                android.util.Log.i("WAKE", "TTS 초기화 완료")
+            } else {
+                android.util.Log.w("WAKE", "TTS 초기화 실패: status=$status")
+                tts = null
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // ★ startForegroundService() 후 5초 내 호출 필수 — 반드시 첫 줄에서 실행
         startForeground(FG_NOTIF_ID, buildTrackingNotification())
 
         val prefs = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
 
-        // 다중 경로: intent extra 우선, 없으면 SharedPreferences
         val allRoutesJson = intent?.getStringExtra(WakeMeServiceModule.KEY_ACTIVE_ROUTES)
             ?: prefs.getString(WakeMeServiceModule.KEY_ACTIVE_ROUTES, null)
 
-        // waypoints 수집
         val waypoints: List<Waypoint>
         val destText: String
 
@@ -123,13 +129,10 @@ class WakeMeService : Service() {
                 WakeMeGeofenceReceiver.lastDestinationName(allRoutesJson)
             }
         } else {
-            // 하위 호환 — 단일 경로
             val routeId = intent?.getStringExtra(WakeMeServiceModule.KEY_ROUTE_ID)
                 ?: prefs.getString(WakeMeServiceModule.KEY_ROUTE_ID, "") ?: ""
             if (routeId.isEmpty()) {
-                stopForeground(true)
-                stopSelf()
-                return START_NOT_STICKY
+                stopForeground(true); stopSelf(); return START_NOT_STICKY
             }
             val waypointsJson = intent?.getStringExtra(WakeMeServiceModule.KEY_WAYPOINTS)
                 ?: prefs.getString(WakeMeServiceModule.KEY_WAYPOINTS, "[]") ?: "[]"
@@ -139,33 +142,32 @@ class WakeMeService : Service() {
 
         if (waypoints.isEmpty()) {
             android.util.Log.w("WAKE", "waypoints 없음 → 서비스 종료")
-            stopForeground(true)
-            stopSelf()
-            return START_NOT_STICKY
+            stopForeground(true); stopSelf(); return START_NOT_STICKY
         }
 
         val routeDepartMap = WakeMeGeofenceReceiver.buildRouteDepartMap(allRoutesJson)
+        routeDaysMap       = WakeMeGeofenceReceiver.buildRouteDaysMap(allRoutesJson)
 
-        // ─ 시간창 체크: 모든 경로가 시간창 밖이면 서비스 즉시 종료
-        // (앱 재시작 시 캐시된 경로가 로드되더라도, 실제 필요한 시각에만 GPS 사용)
-        val anyInWindow = if (routeDepartMap.isEmpty()) {
-            true  // 경로 정보 없으면 일단 유지 (하위 호환)
-        } else {
-            routeDepartMap.values.any { dt ->
-                dt.isBlank() || WakeMeGeofenceReceiver.isWithinServiceWindow(dt)
-            }
+        // 오늘 운행 요일 체크
+        val anyActiveToday = if (routeDaysMap.isEmpty()) true
+        else routeDaysMap.values.any { days -> WakeMeGeofenceReceiver.isActiveToday(days) }
+        if (!anyActiveToday) {
+            android.util.Log.i("WAKE", "오늘 운행 요일 아님 → 서비스 미시작")
+            stopForeground(true); stopSelf(); return START_NOT_STICKY
+        }
+
+        // 시간창 체크
+        val anyInWindow = if (routeDepartMap.isEmpty()) true
+        else routeDepartMap.values.any { dt ->
+            dt.isBlank() || WakeMeGeofenceReceiver.isWithinServiceWindow(dt)
         }
         if (!anyInWindow) {
-            android.util.Log.i("WAKE", "모든 경로 시간창 밖 → 서비스 미시작 (워치독이 시간창 열릴 때 재시작)")
-            stopForeground(true)
-            stopSelf()
-            return START_NOT_STICKY
+            android.util.Log.i("WAKE", "모든 경로 시간창 밖 → 서비스 미시작")
+            stopForeground(true); stopSelf(); return START_NOT_STICKY
         }
 
-        // 목적지 정보로 포그라운드 알림 업데이트
         startForeground(FG_NOTIF_ID, buildTrackingNotification(destText))
 
-        // 기존 위치 콜백 제거 후 재시작 (onStartCommand 재호출 대응)
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
         startLocationUpdates(waypoints, routeDepartMap)
 
@@ -178,11 +180,17 @@ class WakeMeService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
-        gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
-        // 종료 직전 서버에 shutdown 로그 전송
+        tts?.shutdown(); tts = null
         sendShutdownLog()
-        // 워치독과 별개로 RESTART_SERVICE 브로드캐스트도 유지 (이중 안전망)
-        sendBroadcast(Intent("com.wakeme_mobile.RESTART_SERVICE"))
+
+        val prefs = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val hasRoutes = !prefs.getString(WakeMeServiceModule.KEY_ACTIVE_ROUTES, null).isNullOrEmpty()
+        if (hasRoutes) {
+            android.util.Log.i("WAKE", "onDestroy: 경로 잔존 → RESTART_SERVICE 전송")
+            sendBroadcast(Intent("com.wakeme_mobile.RESTART_SERVICE"))
+        } else {
+            android.util.Log.i("WAKE", "onDestroy: 경로 없음 → 재시작 안 함")
+        }
     }
 
     private fun sendShutdownLog() {
@@ -193,20 +201,14 @@ class WakeMeService : Service() {
             try {
                 val url  = java.net.URL("https://wakeme-api.fly.dev/api/notify/shutdown")
                 val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput      = true
-                conn.connectTimeout = 3000
-                conn.readTimeout    = 3000
+                conn.requestMethod = "POST"; conn.doOutput = true
+                conn.connectTimeout = 3000; conn.readTimeout = 3000
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 val body = org.json.JSONObject().apply {
-                    put("userId",  userId)
-                    put("routeId", routeId)
-                    put("reason",  "onDestroy")
+                    put("userId", userId); put("routeId", routeId); put("reason", "onDestroy")
                 }.toString()
                 conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                conn.responseCode
-                conn.disconnect()
-                android.util.Log.i("WAKE", "shutdown 로그 전송 완료")
+                conn.responseCode; conn.disconnect()
             } catch (e: Exception) {
                 android.util.Log.w("WAKE", "shutdown 로그 전송 실패: ${e.message}")
             }
@@ -215,7 +217,7 @@ class WakeMeService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ── 포그라운드 알림 업데이트 (하차/환승 접근 시) ─────────────────
+    // ── 포그라운드 알림 업데이트 ──────────────────────────────────────
 
     private fun updateForegroundNotification(alertText: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -224,212 +226,78 @@ class WakeMeService : Service() {
             packageManager.getLaunchIntentForPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val updated = NotificationCompat.Builder(this, CHANNEL_TRACKING)
+        nm.notify(FG_NOTIF_ID, NotificationCompat.Builder(this, CHANNEL_TRACKING)
             .setContentTitle("WakeMe 알림")
             .setContentText(alertText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pi)
             .setOngoing(false)
-            .build()
-        nm.notify(FG_NOTIF_ID, updated)
+            .build())
     }
 
-    // ── GPS 폴링 ───────────────────────────────────────────────────
+    // ── GPS 폴링 (버스 전용 — 지상 GPS만 사용) ────────────────────────
 
     private fun startLocationUpdates(
         waypoints:      List<Waypoint>,
         routeDepartMap: Map<String, String>,
     ) {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
+            != PackageManager.PERMISSION_GRANTED) {
             android.util.Log.w("WAKE", "위치 권한 없음 → GPS 폴링 미시작")
             return
         }
 
-        val request = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY,  // 지하철 출구 GPS 재획득 대응
-            POLL_INTERVAL_MS,
-        )
-            .setMinUpdateIntervalMillis(10_000L)
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, POLL_INTERVAL_MS)
+            .setMinUpdateIntervalMillis(3_000L)
             .build()
-
-        // 지하 구간 fallback 핸들러 초기화 (GPS 단절 시 캐시 위치로 재시도)
-        gpsTimeoutHandler = android.os.Handler(Looper.getMainLooper())
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
-                val loc = result.lastLocation ?: return
+                // result.lastLocation은 deprecated + Play Services 내부에서
+                // locations.get(size-1) race condition → IndexOutOfBoundsException 발생 가능.
+                // locations.lastOrNull()로 직접 접근해 방어.
+                val loc = try {
+                    result.locations.lastOrNull() ?: result.lastLocation
+                } catch (e: Exception) {
+                    android.util.Log.w("WAKE_GPS", "lastLocation 접근 실패, locations 직접 사용: ${e.message}")
+                    result.locations.lastOrNull()
+                } ?: return
 
-                // ── GPS 위치 캐시 갱신 ──────────────────────────────────
-                lastKnownLat   = loc.latitude
-                lastKnownLng   = loc.longitude
-                lastKnownAcc   = loc.accuracy
-                lastKnownTime  = System.currentTimeMillis()
-                // loc.speed: Android FusedLocationProvider가 제공하는 순간 속도 (m/s)
-                // hasSpeed() false이면 0으로 처리
-                lastKnownSpeed = if (loc.hasSpeed()) loc.speed else 0f
+                // 정확도 낮은 GPS 무시 (지상 버스 환경에서 50m 초과는 신뢰 불가)
+                if (loc.accuracy > MAX_ACCURACY_M) {
+                    android.util.Log.d("WAKE_GPS",
+                        "[GPS 스킵] acc=${loc.accuracy}m > ${MAX_ACCURACY_M}m")
+                    return
+                }
 
-                // fallback 타이머 리셋 (GPS가 다시 잡혔으므로)
-                rescheduleGpsFallback(waypoints, routeDepartMap)
+                lastKnownLat  = loc.latitude
+                lastKnownLng  = loc.longitude
+                lastKnownAcc  = loc.accuracy
+                lastKnownTime = System.currentTimeMillis()
 
-                // ── 시간창 만료 체크: 창이 닫히면 GPS 폴링 중단 ───────────
-                // (서비스 자체는 유지, AlarmManager가 다음 창에 다시 깨움)
+                // 시간창 만료 체크
                 val anyInWindow = routeDepartMap.values.any { dt ->
                     dt.isBlank() || WakeMeGeofenceReceiver.isWithinServiceWindow(dt)
                 }
                 if (!anyInWindow) {
-                    android.util.Log.i("WAKE_GPS", "⏰ 시간창 종료 → GPS 폴링 중지 (서비스 유지, 다음 AlarmManager 대기)")
+                    android.util.Log.i("WAKE_GPS", "⏰ 시간창 종료 → GPS 폴링 중지")
                     fusedLocationClient.removeLocationUpdates(locationCallback!!)
-                    gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
-                    stopForeground(true)
-                    stopSelf()
-                    return
+                    stopForeground(true); stopSelf(); return
                 }
 
-                android.util.Log.d("WAKE_GPS",
-                    "위치 수신: ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
+                android.util.Log.i("WAKE_GPS",
+                    "[GPS] ${loc.latitude}, ${loc.longitude} acc=${loc.accuracy}m")
 
                 checkNearbyWaypoints(loc.latitude, loc.longitude, waypoints, routeDepartMap)
-
-                // 서버 로그: 시간창 내 + 30초 throttle
                 sendGpsPollLogThrottled(loc.latitude, loc.longitude, loc.accuracy, waypoints, routeDepartMap)
             }
         }
 
-        fusedLocationClient.requestLocationUpdates(
-            request,
-            locationCallback!!,
-            Looper.getMainLooper(),
-        )
+        fusedLocationClient.requestLocationUpdates(request, locationCallback!!, Looper.getMainLooper())
         android.util.Log.i("WAKE", "FusedLocationProvider ${POLL_INTERVAL_MS / 1000}초 폴링 등록")
     }
 
-    /**
-     * GPS 단절 감지 fallback — 데드 레커닝(Dead Reckoning).
-     *
-     * GPS가 [POLL_INTERVAL_MS * 3 = 45초] 이상 수신되지 않으면,
-     * 마지막 수신 위치에서 경과 시간 × 지하철 속도(SUBWAY_SPEED_MPS)만큼
-     * 목적지 방향으로 이동했다고 가정한 추정 위치를 계산해 waypoint 체크를 계속한다.
-     *
-     * 예) GPS 끊긴 시점이 목적지 2정거장 전 → 1정거장 분 시간 경과
-     *     → 1정거장 거리만큼 목적지 방향으로 이동한 위치로 계산
-     *
-     * 캐시가 GPS_CACHE_TTL_MS(5분)보다 오래됐으면 중단.
-     */
-    private fun rescheduleGpsFallback(
-        waypoints:      List<Waypoint>,
-        routeDepartMap: Map<String, String>,
-    ) {
-        gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
-
-        val fallbackDelayMs  = POLL_INTERVAL_MS * 3  // 45초 무응답 → fallback 시작
-        val fallbackInterval = 30_000L               // 이후 30초마다 재추정
-
-        fun scheduleNext() {
-            val r = Runnable {
-                val now        = System.currentTimeMillis()
-                val cacheAgeMs = now - lastKnownTime
-
-                if (lastKnownLat.isNaN() || cacheAgeMs > GPS_CACHE_TTL_MS) {
-                    android.util.Log.d("WAKE_GPS", "GPS 캐시 없음 또는 만료(${cacheAgeMs / 1000}초) → fallback 중단")
-                    return@Runnable
-                }
-
-                val anyInWindow = routeDepartMap.values.any { departTime ->
-                    departTime.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(departTime)
-                }
-                if (!anyInWindow) return@Runnable
-
-                // ── 데드 레커닝 추정 위치 계산 ────────────────────────────
-                // 조건: GPS 끊기 직전 실제로 이동 중이었을 때만 이동 거리를 합산
-                val wasMoving   = lastKnownSpeed >= MOVING_THRESHOLD_MPS
-                val destination = waypoints.firstOrNull { it.type == "destination" }
-
-                val (estLat, estLng) = when {
-                    // 이동 중 + 목적지 있음 → 데드레커닝
-                    wasMoving && destination != null -> {
-                        val elapsedSec      = cacheAgeMs / 1000.0
-                        val travelledMeters = elapsedSec * SUBWAY_SPEED_MPS
-
-                        // 목적지까지 남은 거리
-                        val remainingM = haversineMeters(lastKnownLat, lastKnownLng, destination.lat, destination.lng)
-
-                        // 오버슈팅 방지: 목적지 거리를 넘지 않도록
-                        val moveMeters = minOf(travelledMeters, remainingM)
-
-                        val estimated = projectPosition(
-                            lastKnownLat, lastKnownLng,
-                            destination.lat, destination.lng,
-                            moveMeters,
-                        )
-
-                        android.util.Log.i("WAKE_GPS",
-                            "⚠️ GPS 단절 ${cacheAgeMs / 1000}초 [이동중 ${lastKnownSpeed}m/s] — 데드레커닝: " +
-                            "이동추정 ${moveMeters.toInt()}m / 남은거리 ${remainingM.toInt()}m → " +
-                            "(${estimated.first}, ${estimated.second})")
-
-                        estimated
-                    }
-                    // 정지 중이었거나 destination 없음 → 마지막 위치 그대로 유지
-                    else -> {
-                        android.util.Log.i("WAKE_GPS",
-                            "⚠️ GPS 단절 ${cacheAgeMs / 1000}초 [${if (!wasMoving) "정지중 ${lastKnownSpeed}m/s" else "destination 없음"}] — 마지막 위치 유지")
-                        Pair(lastKnownLat, lastKnownLng)
-                    }
-                }
-
-                checkNearbyWaypoints(estLat, estLng, waypoints, routeDepartMap)
-                sendGpsPollLogThrottled(estLat, estLng, -1f, waypoints, routeDepartMap, isCached = true)
-
-                // 다음 fallback 예약
-                gpsTimeoutRunnable = Runnable { scheduleNext() }
-                gpsTimeoutHandler?.postDelayed(gpsTimeoutRunnable!!, fallbackInterval)
-            }
-            gpsTimeoutRunnable = r
-            gpsTimeoutHandler?.postDelayed(r, fallbackDelayMs)
-        }
-
-        scheduleNext()
-    }
-
-    /**
-     * 시작점(startLat, startLng)에서 목표점(targetLat, targetLng) 방향으로
-     * distanceM 미터 이동했을 때의 추정 위치를 반환한다.
-     *
-     * Haversine 역산(destination point formula) 사용.
-     */
-    private fun projectPosition(
-        startLat: Double, startLng: Double,
-        targetLat: Double, targetLng: Double,
-        distanceM: Double,
-    ): Pair<Double, Double> {
-        val R = 6_371_000.0
-        val d = distanceM / R  // 각도(rad)
-
-        val lat1 = Math.toRadians(startLat)
-        val lng1 = Math.toRadians(startLng)
-        val lat2 = Math.toRadians(targetLat)
-        val lng2 = Math.toRadians(targetLng)
-
-        // 출발 → 목적지 방향 bearing
-        val dLng    = lng2 - lng1
-        val bearing = atan2(
-            sin(dLng) * cos(lat2),
-            cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
-        )
-
-        // d 거리만큼 bearing 방향으로 이동한 새 좌표
-        val newLat = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing))
-        val newLng = lng1 + atan2(
-            sin(bearing) * sin(d) * cos(lat1),
-            cos(d) - sin(lat1) * sin(newLat)
-        )
-
-        return Pair(Math.toDegrees(newLat), Math.toDegrees(newLng))
-    }
-
-    // ── 거리 체크 ──────────────────────────────────────────────────
+    // ── 거리 체크 + 알림 ──────────────────────────────────────────────
 
     private fun checkNearbyWaypoints(
         myLat:          Double,
@@ -438,12 +306,13 @@ class WakeMeService : Service() {
         routeDepartMap: Map<String, String>,
     ) {
         val prefs = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+        val userAlertRadiusM = prefs.getFloat(
+            WakeMeServiceModule.KEY_ALERT_RADIUS, DEFAULT_ALERT_RADIUS_M.toFloat()
+        ).toDouble()
 
         waypoints.forEach { wp ->
-            // 이미 알림 보낸 waypoint 스킵
             if (wp.id in notifiedWaypoints) return@forEach
 
-            // 경로별 서비스 시간창 체크
             val routeId    = WakeMeGeofenceReceiver.extractRouteId(wp.id)
             val departTime = routeDepartMap[routeId]
                 ?: prefs.getString(WakeMeServiceModule.KEY_DEPART_TIME, "") ?: ""
@@ -453,52 +322,73 @@ class WakeMeService : Service() {
                 return@forEach
             }
 
-            // Haversine 거리 계산
-            // 최종 목적지(주소)는 더 좁은 반경 사용 (200m), 나머지는 500m
+            val routeDays = routeDaysMap[routeId] ?: listOf(0, 1, 2, 3, 4, 5, 6)
+            if (!WakeMeGeofenceReceiver.isActiveToday(routeDays)) {
+                android.util.Log.d("WAKE_GPS", "오늘 운행 요일 아님 스킵: ${wp.name}")
+                return@forEach
+            }
+
             val isFinalDest = wp.id.endsWith("wp_final_dest")
-            val radius = if (isFinalDest) FINAL_DEST_RADIUS_M else ALERT_RADIUS_M
-            val distM  = haversineMeters(myLat, myLng, wp.lat, wp.lng)
-            android.util.Log.d("WAKE_GPS", "${wp.name}: ${distM.toInt()}m / ${radius.toInt()}m${if (isFinalDest) " [최종목적지]" else ""}")
+            val radius      = if (isFinalDest) FINAL_DEST_RADIUS_M else userAlertRadiusM
+            val distM       = haversineMeters(myLat, myLng, wp.lat, wp.lng)
+            android.util.Log.d("WAKE_GPS",
+                "${wp.name}: ${distM.toInt()}m / ${radius.toInt()}m${if (isFinalDest) " [최종목적지]" else ""}")
 
             if (distM <= radius) {
-                android.util.Log.i("WAKE_GPS", "✅ 진입 감지: ${wp.name} (${distM.toInt()}m) type=${wp.type} nextMode=${wp.nextMode}")
+                android.util.Log.i("WAKE_GPS",
+                    "✅ 진입 감지: ${wp.name} (${distM.toInt()}m) type=${wp.type} nextMode=${wp.nextMode}")
                 notifiedWaypoints.add(wp.id)
-                persistNotifiedWaypoints()  // 서비스 재시작 후에도 중복 알림 방지
+                persistNotifiedWaypoints()
 
                 when (wp.type) {
                     "destination" -> {
                         sendDestinationAlert(wp.id.hashCode(), "🚨 지금 내리세요!", "${wp.name} 하차 준비하세요")
                         updateForegroundNotification("🚨 지금 내리세요! — ${wp.name}")
-                        // 목적지 도착 → GPS 폴링 종료 (2초 후 서비스 자동 종료)
-                        // 2초 대기: 알림이 화면에 뜰 시간 확보
-                        android.util.Log.i("WAKE_GPS", "🏁 목적지 도착: ${wp.name} → 2초 후 서비스 종료")
-                        gpsTimeoutHandler?.postDelayed({
+                        sendAlertAckCheck(wp.name, wp.id.hashCode())
+                        android.util.Log.i("WAKE_GPS", "🏁 목적지 도착: ${wp.name} → 서비스 종료")
+                        android.os.Handler(Looper.getMainLooper()).postDelayed({
                             locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
-                            gpsTimeoutRunnable?.let { gpsTimeoutHandler?.removeCallbacks(it) }
-                            stopForeground(true)
-                            stopSelf()
+                            WakeMeWatchdogReceiver.cancel(this)
+
+                            val completedRouteId = wp.id.split("__").firstOrNull() ?: ""
+                            val currentJson = prefs.getString(
+                                WakeMeServiceModule.KEY_ACTIVE_ROUTES, "[]") ?: "[]"
+                            val remaining = try {
+                                val arr      = org.json.JSONArray(currentJson)
+                                val filtered = org.json.JSONArray()
+                                for (i in 0 until arr.length()) {
+                                    val r = arr.getJSONObject(i)
+                                    if (r.optString("routeId") != completedRouteId) filtered.put(r)
+                                }
+                                filtered
+                            } catch (e: Exception) { org.json.JSONArray() }
+
+                            android.util.Log.i("WAKE_GPS",
+                                "🏁 경로 $completedRouteId 완료 → 남은 경로: ${remaining.length()}개")
+                            prefs.edit()
+                                .putString(WakeMeServiceModule.KEY_ACTIVE_ROUTES, remaining.toString())
+                                .remove(WakeMeServiceModule.KEY_ROUTE_ID)
+                                .apply()
+
+                            if (remaining.length() > 0) {
+                                WakeMeWindowStartReceiver.scheduleAll(this, remaining.toString())
+                            }
+                            stopForeground(true); stopSelf()
                         }, 2_000L)
                     }
                     "transfer" -> when (wp.nextMode) {
                         "bus" -> {
-                            // 다음이 버스 구간 → 탑승 정류장 버스 도착 정보 조회
-                            val stopId   = wp.nextStopId
                             val stopName = wp.nextStopName.ifEmpty { wp.name }
-                            updateForegroundNotification("🔔 환승 준비 — $stopName 버스 안내 조회 중")
-                            Thread {
-                                try {
-                                    val body = fetchBusArrivals(stopId, stopName)
-                                    sendAlert(wp.id.hashCode(), "🚌 $stopName — 버스 시간 안내", body)
-                                } catch (e: Exception) {
-                                    android.util.Log.w("WAKE_GPS", "버스 도착 조회 실패: ${e.message}")
-                                    sendAlert(wp.id.hashCode(), "🔔 환승 준비", "$stopName 에서 버스로 환승하세요")
-                                }
-                            }.start()
+                            sendAlert(wp.id.hashCode(), "🔔 환승 준비", "$stopName 에서 버스로 환승하세요")
+                            updateForegroundNotification("🔔 환승 준비 — $stopName")
+                        }
+                        "subway" -> {
+                            sendAlert(wp.id.hashCode(), "🔔 환승 준비", "${wp.name}에서 지하철로 환승하세요")
+                            updateForegroundNotification("🔔 환승 준비 — ${wp.name}")
                         }
                         else -> {
-                            // 다음이 지하철이거나 정보 없음 → 단순 환승 안내
-                            sendAlert(wp.id.hashCode(), "🔔 환승 준비", "${wp.name}에서 환승하세요")
-                            updateForegroundNotification("🔔 환승 준비 — ${wp.name}")
+                            sendDestinationAlert(wp.id.hashCode(), "🚨 지금 내리세요!", "${wp.name}에서 내리세요")
+                            updateForegroundNotification("🚨 지금 내리세요! — ${wp.name}")
                         }
                     }
                 }
@@ -506,12 +396,9 @@ class WakeMeService : Service() {
         }
     }
 
-    // ── Haversine 공식 (두 좌표 간 실제 거리, 미터) ─────────────────
+    // ── Haversine (두 좌표 간 거리, 미터) ────────────────────────────
 
-    private fun haversineMeters(
-        lat1: Double, lng1: Double,
-        lat2: Double, lng2: Double,
-    ): Double {
+    private fun haversineMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
         val R    = 6_371_000.0
         val dLat = Math.toRadians(lat2 - lat1)
         val dLng = Math.toRadians(lng2 - lng1)
@@ -521,25 +408,20 @@ class WakeMeService : Service() {
         return R * 2 * asin(sqrt(a))
     }
 
-    // ── 서버 GPS 폴링 로그 전송 — 시간창 내 + 30초 throttle ────────
+    // ── 서버 GPS 폴링 로그 (30초 throttle) ───────────────────────────
 
     private fun sendGpsPollLogThrottled(
         lat:            Double,
         lng:            Double,
-        accuracy:       Number,   // Float(실측) 또는 -1f(데드레커닝)
+        accuracy:       Float,
         waypoints:      List<Waypoint>,
         routeDepartMap: Map<String, String>,
-        isCached:       Boolean = false,
     ) {
-        // ① 시간창 외부이면 전송 안 함
-        // isWithinServiceWindow("") = true (빈 값은 항상 통과) 이므로
-        // departTime이 실제로 설정된 경우에만 시간창 체크
-        val anyInWindow = routeDepartMap.values.any { departTime ->
-            departTime.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(departTime)
+        val anyInWindow = routeDepartMap.values.any { dt ->
+            dt.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(dt)
         }
         if (!anyInWindow) return
 
-        // ② 30초 throttle (SharedPreferences 기반 — 서비스 재시작 후에도 유지)
         val now = System.currentTimeMillis()
         if (now - lastGpsPollLogTime < GPS_LOG_INTERVAL_MS) return
         saveGpsPollLogTime(now)
@@ -551,18 +433,15 @@ class WakeMeService : Service() {
             try {
                 val wpArray = org.json.JSONArray()
                 waypoints.forEach { wp ->
-                    val distM    = haversineMeters(lat, lng, wp.lat, wp.lng).toInt()
-                    val routeId  = WakeMeGeofenceReceiver.extractRouteId(wp.id)
-                    val depart   = routeDepartMap[routeId] ?: ""
-                    val inWindow = WakeMeGeofenceReceiver.isWithinServiceWindow(depart)
-                    val notified = wp.id in notifiedWaypoints
+                    val distM   = haversineMeters(lat, lng, wp.lat, wp.lng).toInt()
+                    val routeId = WakeMeGeofenceReceiver.extractRouteId(wp.id)
+                    val depart  = routeDepartMap[routeId] ?: ""
                     wpArray.put(org.json.JSONObject().apply {
                         put("name",      wp.name)
                         put("type",      wp.type)
                         put("distanceM", distM)
-                        put("inWindow",  inWindow)
-                        put("notified",  notified)
-                        if (isCached) put("cached", true)
+                        put("inWindow",  WakeMeGeofenceReceiver.isWithinServiceWindow(depart))
+                        put("notified",  wp.id in notifiedWaypoints)
                     })
                 }
 
@@ -570,65 +449,63 @@ class WakeMeService : Service() {
                     put("userId",    userId)
                     put("lat",       lat)
                     put("lng",       lng)
-                    put("accuracy",  if (isCached) -1 else accuracy) // -1 = 캐시 위치임을 표시
+                    put("accuracy",  accuracy)
+                    put("gpsType",   "real")
                     put("waypoints", wpArray)
-                    if (isCached) put("gpsLost", true)
                 }.toString()
 
                 val url  = java.net.URL("https://wakeme-api.fly.dev/api/notify/gps-poll")
                 val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput      = true
-                conn.connectTimeout = 3000
-                conn.readTimeout    = 3000
+                conn.requestMethod = "POST"; conn.doOutput = true
+                conn.connectTimeout = 3000; conn.readTimeout = 3000
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                conn.responseCode
-                conn.disconnect()
+                conn.responseCode; conn.disconnect()
             } catch (e: Exception) {
                 android.util.Log.w("WAKE_GPS", "poll 로그 전송 실패: ${e.message}")
             }
         }.start()
     }
 
-    // ── 버스 도착 정보 조회 (환승 지오펜스 진입 시 사용) ─────────────
+    // ── 이어폰 감지 + TTS ─────────────────────────────────────────────
 
-    private fun fetchBusArrivals(stopId: String, stopName: String): String {
-        if (stopId.isEmpty()) return "탑승 준비하세요"
-
-        val url  = java.net.URL("https://wakeme-api.fly.dev/api/bus/arriving?nodeId=$stopId")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = 5000
-        conn.readTimeout    = 5000
-
-        return try {
-            val response = conn.inputStream.bufferedReader().readText()
-            val json = org.json.JSONObject(response)
-            val arr  = json.optJSONArray("data") ?: return "현재 운행 정보를 불러올 수 없습니다"
-
-            data class BusArrival(val routeNo: String, val arrMin: Int)
-            val buses = mutableListOf<BusArrival>()
-            for (i in 0 until arr.length()) {
-                val item = arr.getJSONObject(i)
-                val rno  = item.optString("routeno").trim()
-                val sec  = item.optInt("arrtime", 0)
-                if (rno.isNotEmpty() && sec > 0) {
-                    buses.add(BusArrival(rno, kotlin.math.ceil(sec / 60.0).toInt()))
+    private fun isEarphoneConnected(): Boolean {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val connected = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).filter { device ->
+                when (device.type) {
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_USB_HEADSET,
+                    -> true
+                    else -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+                    } else false
                 }
             }
-            if (buses.isEmpty()) return "현재 운행 정보를 불러올 수 없습니다"
-
-            buses.sortBy { it.arrMin }
-            val cal    = java.util.Calendar.getInstance()
-            val nowStr = String.format("%d:%02d", cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
-            val summary = buses.take(4).joinToString(" • ") { "${it.routeNo}번 ${it.arrMin}분 후" }
-            "현재 ${nowStr} 기준\n$summary"
-        } finally {
-            conn.disconnect()
+            connected.isNotEmpty()
+        } else {
+            @Suppress("DEPRECATION")
+            am.isWiredHeadsetOn || am.isBluetoothA2dpOn || am.isBluetoothScoOn
         }
     }
 
-    // ── 하차 알림 (강진동 3회) ────────────────────────────────────
+    private fun speakAlert(text: String) {
+        if (!isEarphoneConnected()) return
+        val engine = tts ?: return
+        val volume = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+            .getFloat(WakeMeServiceModule.KEY_TTS_VOLUME, 0.8f)
+        val params = android.os.Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
+        }
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, "wakeme_alert")
+        android.util.Log.i("WAKE_TTS", "TTS 발화 (볼륨=${volume}): $text")
+    }
+
+    // ── 하차 알림 (강진동 3회) ────────────────────────────────────────
 
     private fun sendDestinationAlert(id: Int, title: String, body: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -637,29 +514,33 @@ class WakeMeService : Service() {
             packageManager.getLaunchIntentForPackage(packageName),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
-        // 진동 패턴: [대기, 진동, 쉬기] × 3회
-        // 0ms 대기 → 700ms 진동 → 400ms 쉬기 → 700ms 진동 → 400ms 쉬기 → 700ms 진동
-        val vibPattern = longArrayOf(0, 700, 400, 700, 400, 700)
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_DESTINATION)
+        nm.notify(id, NotificationCompat.Builder(this, CHANNEL_DESTINATION)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setVibrate(vibPattern)
-            .setLights(0xFFFF0000.toInt(), 500, 500)  // 빨간 LED 점멸
+            .setVibrate(longArrayOf(0, 700, 400, 700, 400, 700))
+            .setLights(0xFFFF0000.toInt(), 500, 500)
             .setContentIntent(pi)
             .setAutoCancel(true)
-            .setFullScreenIntent(pi, true)  // 화면 켜기 (잠금화면 팝업)
-            .build()
-
-        nm.notify(id, notification)
+            .setFullScreenIntent(pi, true)
+            .build())
+        speakAlert(body)
     }
 
-    // ── 환승 알림 ─────────────────────────────────────────────────
+    // ── 하차 알림 수신 확인 ("정상적으로 받으셨나요?") ──────────────────
+    // 백그라운드/Doze 모드에서 sendDestinationAlert()가 실제로 사용자에게
+    // 도달했는지 확인할 길이 없었음 → Yes/No 액션 알림 + 60초 무응답 시
+    // 1회 에스컬레이션. WakeMeAlertAckReceiver가 응답/타임아웃을 처리.
+    private fun sendAlertAckCheck(waypointName: String, baseId: Int) {
+        val userId = getSharedPreferences(WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
+        WakeMeAlertAckReceiver.sendAckCheckNotification(this, waypointName, userId, baseId)
+    }
+
+    // ── 환승 알림 ─────────────────────────────────────────────────────
 
     private fun sendAlert(id: Int, title: String, body: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -668,8 +549,7 @@ class WakeMeService : Service() {
             packageManager.getLaunchIntentForPackage(packageName),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_ALERT)
+        nm.notify(id, NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -678,14 +558,13 @@ class WakeMeService : Service() {
             .setVibrate(longArrayOf(0, 400, 200, 400))
             .setContentIntent(pi)
             .setAutoCancel(true)
-            .build()
-
-        nm.notify(id, notification)
+            .build())
+        speakAlert(body)
     }
 
-    // ── 포그라운드 알림 ────────────────────────────────────────────
+    // ── 포그라운드 알림 ───────────────────────────────────────────────
 
-    private fun buildTrackingNotification(@Suppress("UNUSED_PARAMETER") destText: String = ""): Notification {
+    private fun buildTrackingNotification(destText: String = ""): Notification {
         val pi = PendingIntent.getActivity(
             this, 0,
             packageManager.getLaunchIntentForPackage(packageName),
@@ -698,10 +577,9 @@ class WakeMeService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
         return NotificationCompat.Builder(this, CHANNEL_TRACKING)
             .setContentTitle("WakeMe")
-            .setContentText("상시 대기 중입니다")   // 항상 고정 문구
+            .setContentText("상시 대기 중입니다")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pi)
             .setDeleteIntent(deleteIntent)
@@ -712,7 +590,6 @@ class WakeMeService : Service() {
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_TRACKING, "WakeMe 모니터링 중", NotificationManager.IMPORTANCE_LOW)
             )
@@ -722,7 +599,6 @@ class WakeMeService : Service() {
                     vibrationPattern = longArrayOf(0, 400, 200, 400)
                 }
             )
-            // 하차 전용: 최고 우선순위 + 강진동 3회
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_DESTINATION, "WakeMe 하차 알림", NotificationManager.IMPORTANCE_HIGH).apply {
                     enableVibration(true)

@@ -8,8 +8,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -26,7 +28,12 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
         const val KEY_DEPART_TIME   = "departTime"    // 하위 호환
         const val KEY_USER_ID       = "userId"
         const val KEY_ACTIVE_ROUTES = "activeRoutes"  // JSON 배열 [{routeId, waypoints, departTime}]
+        const val KEY_TTS_VOLUME    = "ttsVolume"     // TTS 볼륨 (0.0 ~ 1.0, 기본 0.8)
+        const val KEY_ALERT_RADIUS  = "alertRadiusM"  // 하차/환승 준비 알림 반경 (m, 기본 500f) — 500/700/900/1200 중 선택
     }
+
+    // 미리듣기 전용 TTS (모듈 레벨, 설정 화면에서만 사용)
+    private var previewTts: TextToSpeech? = null
 
     override fun getName(): String = "WakeMeService"
 
@@ -72,9 +79,24 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun stopAll() {
         android.util.Log.i("WAKE", "WakeMeServiceModule: stopAll()")
+        // 워치독 취소
         WakeMeWatchdogReceiver.cancel(reactContext)
-        reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().clear().apply()
+        // 저장된 모든 경로의 시간창 AlarmManager 알람 취소 (주말 오발동 방지)
+        val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val routesJson = prefs.getString(KEY_ACTIVE_ROUTES, "[]") ?: "[]"
+        try {
+            val arr = org.json.JSONArray(routesJson)
+            for (i in 0 until arr.length()) {
+                val routeId = arr.getJSONObject(i).optString("routeId")
+                if (routeId.isNotEmpty()) {
+                    WakeMeWindowStartReceiver.cancel(reactContext, routeId)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("WAKE", "시간창 알람 취소 실패: ${e.message}")
+        }
+        // SharedPreferences 초기화 + 서비스 종료
+        prefs.edit().clear().apply()
         reactContext.stopService(Intent(reactContext, WakeMeService::class.java))
     }
 
@@ -120,46 +142,7 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
         // 24시간 이상 남은 경우는 너무 이른 예약 → 스킵
         if (msUntilDepart > 24 * 60 * 60 * 1000) return
 
-        val alarmManager = reactContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        fun makePi(reqCode: Int, title: String): PendingIntent {
-            val i = Intent(reactContext, WakeMeDepartureReceiver::class.java).apply {
-                putExtra(WakeMeDepartureReceiver.EXTRA_TITLE,     title)
-                putExtra(WakeMeDepartureReceiver.EXTRA_NOTIF_ID,  reqCode)
-                putExtra(WakeMeDepartureReceiver.EXTRA_STOP_NAME, stopName)
-                putExtra(WakeMeDepartureReceiver.EXTRA_STOP_ID,   startStopId)
-            }
-            return PendingIntent.getBroadcast(
-                reactContext, reqCode, i,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        fun scheduleExact(triggerMs: Long, pi: PendingIntent) {
-            try {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
-            } catch (e: SecurityException) {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
-            }
-        }
-
-        val id5min = ("$routeId-5min").hashCode()
-        val idNow  = ("$routeId-now").hashCode()
-
-        val msUntil5Min = msUntilDepart - 5 * 60 * 1000
-        if (msUntil5Min > 0) {
-            scheduleExact(
-                System.currentTimeMillis() + msUntil5Min,
-                makePi(id5min, "🚌 $stopName — 버스 시간 안내")
-            )
-            android.util.Log.i("WAKE", "출발 5분전 알람 예약: ${msUntil5Min / 1000}초 후")
-        }
-
-        scheduleExact(
-            System.currentTimeMillis() + msUntilDepart,
-            makePi(idNow, "🚌 $stopName — 버스 시간 안내")
-        )
-        android.util.Log.i("WAKE", "출발시간 알람 예약: ${msUntilDepart / 1000}초 후")
+        // 버스 시간 안내 알림 제거됨
     }
 
     /** 배터리 최적화 예외 요청 다이얼로그 직접 띄우기 */
@@ -196,8 +179,60 @@ class WakeMeServiceModule(private val reactContext: ReactApplicationContext) :
             pi?.let { alarmManager.cancel(it) }
         }
 
-        cancelById(("$routeId-5min").hashCode())
         cancelById(("$routeId-now").hashCode())
         android.util.Log.i("WAKE", "출발 알람 취소: routeId=$routeId")
     }
+
+    // ── TTS 볼륨 설정 ──────────────────────────────────────────────
+
+    /** JS에서 볼륨 저장 (0.0 ~ 1.0) */
+    @ReactMethod
+    fun setTtsVolume(volume: Float) {
+        reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_TTS_VOLUME, volume).apply()
+        android.util.Log.i("WAKE", "TTS 볼륨 저장: $volume")
+    }
+
+    /** 현재 저장된 볼륨 반환 (기본 0.8) */
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun getTtsVolume(): Float {
+        return reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getFloat(KEY_TTS_VOLUME, 0.8f)
+    }
+
+    /**
+     * 설정 화면에서 슬라이더를 움직일 때 미리 소리 재생.
+     * 매 호출마다 이전 TTS를 종료하고 새로 초기화해 볼륨을 즉시 반영한다.
+     */
+    @ReactMethod
+    fun previewTts(volume: Float) {
+        previewTts?.shutdown()
+        previewTts = TextToSpeech(reactContext) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                previewTts?.language = java.util.Locale.KOREAN
+                val params = android.os.Bundle().apply {
+                    putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
+                }
+                previewTts?.speak("볼륨 테스트입니다", TextToSpeech.QUEUE_FLUSH, params, "preview")
+            }
+        }
+    }
+
+    // ── 알림 반경 설정 (전역, 경로별 아님) ────────────────────────────
+
+    /** JS에서 알림 반경 저장 (미터, 500/700/900/1200 중 선택) */
+    @ReactMethod
+    fun setAlertRadius(radius: Float) {
+        reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_ALERT_RADIUS, radius).apply()
+        android.util.Log.i("WAKE", "알림 반경 저장: ${radius}m")
+    }
+
+    /** 현재 저장된 알림 반경 반환 (기본 500m) */
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun getAlertRadius(): Float {
+        return reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getFloat(KEY_ALERT_RADIUS, 500f)
+    }
+
 }

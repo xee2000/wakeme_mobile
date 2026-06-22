@@ -2,6 +2,18 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 apply plugin: "com.google.gms.google-services"
+apply plugin: "io.sentry.android.gradle"
+
+// Sentry: ProGuard 맵 업로드 비활성화 (토큰 불필요, 크래시 캡처만 사용)
+sentry {
+    autoUploadProguardMapping = false
+    uploadNativeSymbols = false
+    autoUploadNativeSymbols = false
+    includeNativeSources = false
+    tracingInstrumentation {
+        enabled = false
+    }
+}
 
 // local.properties 에서 키 읽기 (project.findProperty 는 local.properties 를 자동 인식하지 않음)
 def localProps = new Properties()
@@ -87,12 +99,16 @@ android {
 
 
     namespace "com.wakeme_mobile"
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId "com.wakeme_mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 7
-        versionName "1.6"
+        versionCode 29
+        versionName "1.29"
         // 네이버 지도 클라이언트 ID + cleartext 기본값 설정
         manifestPlaceholders = [
             NAVER_CLIENT_ID: (localProps.getProperty("NAVER_CLIENT_ID") ?: ""),
@@ -100,7 +116,7 @@ android {
         ]
         // 현대 기기는 arm64-v8a만 있으면 됨 — 나머지 제거로 용량 절감
         ndk {
-            abiFilters "arm64-v8a", "x86", "x86_64"
+            abiFilters "arm64-v8a"
         }
     }
     signingConfigs {
@@ -135,6 +151,9 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+
+    // Meta Facebook SDK (앱 설치 광고 추적용)
+    implementation("com.facebook.android:facebook-android-sdk:17.0.1")
 
     // 카카오 SDK
     implementation("com.kakao.sdk:v2-common:2.20.1")

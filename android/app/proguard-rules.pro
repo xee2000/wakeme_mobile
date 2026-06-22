@@ -31,3 +31,15 @@
 # ── OkHttp ────────────────────────────────────────────────────────
 -dontwarn okhttp3.**
 -dontwarn okio.**
+
+-dontwarn io.sentry.util.thread.IMainThreadChecker
+-keep class io.sentry.** { *; }
+
+# ── react-native-screens ───────────────────────────────────────────
+# Fragment 클래스를 이름으로 복원하므로 난독화 금지.
+# ProGuard가 클래스명을 바꾸면 오래 백그라운드에 있다 돌아올 때
+# "calling Fragment constructor caused an exception" 크래시 발생.
+-keep class com.swmansion.rnscreens.** { *; }
+
+# ── Fragment 전체 보존 (Fragment 백스택 복원 안전망) ─────────────────
+-keep public class * extends androidx.fragment.app.Fragment

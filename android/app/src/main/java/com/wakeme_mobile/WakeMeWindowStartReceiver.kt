@@ -9,7 +9,7 @@ import android.os.Build
  * AlarmManager가 출발시간 10분 전에 깨우는 리시버.
  *
  * WakeMeService를 시작해 GPS 폴링을 시작한다.
- * 서비스는 [출발시간 - 10분 ~ 출발시간 + 2시간] 동안 동작 후 스스로 종료.
+ * 서비스는 [출발시간 - 10분 ~ 출발시간 + 3시간] 동안 동작 후 스스로 종료.
  *
  * 평소에는 백그라운드 서비스가 전혀 돌지 않으므로 배터리 낭비 없음.
  */
@@ -32,6 +32,10 @@ class WakeMeWindowStartReceiver : BroadcastReceiver() {
         } else {
             context.startService(serviceIntent)
         }
+
+        // 워치독 체인 재등록 (시간창 종료 후 중단됐던 체인을 복원)
+        WakeMeWatchdogReceiver.schedule(context)
+        android.util.Log.i("WAKE_ALARM", "워치독 재등록 완료")
     }
 
     companion object {
@@ -41,6 +45,24 @@ class WakeMeWindowStartReceiver : BroadcastReceiver() {
          * 모든 경로의 [departTime - 10분] 알람을 예약한다.
          * 이미 등록된 알람은 FLAG_UPDATE_CURRENT로 조용히 덮어씀.
          */
+        /**
+         * 특정 routeId의 시간창 알람을 취소한다.
+         */
+        fun cancel(context: Context, routeId: String) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE)
+                as android.app.AlarmManager
+            val reqCode = (REQUEST_CODE_BASE.toLong() + routeId.hashCode().toLong()).toInt()
+            val pi = android.app.PendingIntent.getBroadcast(
+                context, reqCode,
+                Intent(context, WakeMeWindowStartReceiver::class.java),
+                android.app.PendingIntent.FLAG_NO_CREATE or android.app.PendingIntent.FLAG_IMMUTABLE,
+            )
+            pi?.let {
+                alarmManager.cancel(it)
+                android.util.Log.i("WAKE_ALARM", "GPS 시작 알람 취소: $routeId")
+            }
+        }
+
         fun scheduleAll(context: Context, allRoutesJson: String) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE)
                 as android.app.AlarmManager
@@ -70,6 +92,20 @@ class WakeMeWindowStartReceiver : BroadcastReceiver() {
                     // 이미 지났으면 내일로
                     if (triggerCal.timeInMillis < now) {
                         triggerCal.add(java.util.Calendar.DAY_OF_MONTH, 1)
+                    }
+
+                    // 요일 체크: triggerCal 날짜가 운행 요일에 포함되는지 확인
+                    val daysArr = r.optJSONArray("daysOfWeek")
+                    val days = if (daysArr != null) {
+                        (0 until daysArr.length()).map { daysArr.getInt(it) }
+                    } else {
+                        listOf(0, 1, 2, 3, 4, 5, 6)
+                    }
+                    val triggerDayJs = (triggerCal.get(java.util.Calendar.DAY_OF_WEEK) - 1) % 7
+                    if (!days.contains(triggerDayJs)) {
+                        android.util.Log.d("WAKE_ALARM",
+                            "운행 요일 아님 → 알람 스킵: $routeId (triggerDay=$triggerDayJs, days=$days)")
+                        continue
                     }
 
                     val msUntil = triggerCal.timeInMillis - now

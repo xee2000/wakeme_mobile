@@ -19,10 +19,23 @@ class WakeMeBootReceiver : BroadcastReceiver() {
                 val prefs = context.getSharedPreferences(
                     WakeMeServiceModule.PREFS_NAME, Context.MODE_PRIVATE
                 )
-                val routeId = prefs.getString(WakeMeServiceModule.KEY_ROUTE_ID, "")
+                val allRoutesJson = prefs.getString(WakeMeServiceModule.KEY_ACTIVE_ROUTES, null)
 
-                if (routeId.isNullOrEmpty()) {
-                    android.util.Log.i("WAKE", "WakeMeBootReceiver: 상태 없음 — 스킵")
+                if (allRoutesJson.isNullOrEmpty() || allRoutesJson == "[]") {
+                    android.util.Log.i("WAKE", "WakeMeBootReceiver: 활성 경로 없음 — 스킵")
+                    return
+                }
+
+                // 시간창 안에 있는 경로가 있을 때만 재시작
+                val departMap = WakeMeGeofenceReceiver.buildRouteDepartMap(allRoutesJson)
+                val hasActiveWindow = if (departMap.isEmpty()) {
+                    true
+                } else {
+                    departMap.values.any { dt -> dt.isBlank() || WakeMeGeofenceReceiver.isWithinServiceWindow(dt) }
+                }
+
+                if (!hasActiveWindow) {
+                    android.util.Log.i("WAKE", "WakeMeBootReceiver: 시간창 밖 — 서비스 재시작 스킵")
                     return
                 }
 

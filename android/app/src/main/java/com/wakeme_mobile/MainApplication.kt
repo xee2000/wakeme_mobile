@@ -6,6 +6,8 @@ import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
+import com.facebook.FacebookSdk
+import com.facebook.appevents.AppEventsLogger
 import com.kakao.sdk.common.KakaoSdk
 import com.naver.maps.map.NaverMapSdk
 
@@ -26,6 +28,9 @@ class MainApplication : Application(), ReactApplication {
     // 카카오 SDK 초기화 (네이티브 앱 키)
     KakaoSdk.init(this, "b04b17eeb689cfd9d2a18871748bff94")
     NaverMapSdk.getInstance(this).client = NaverMapSdk.NcpKeyClient("hudu5weji7")
+    // Meta Facebook SDK 초기화 (앱 설치 광고 추적)
+    FacebookSdk.sdkInitialize(applicationContext)
+    AppEventsLogger.activateApp(this)
     loadReactNative(this)
   }
 }

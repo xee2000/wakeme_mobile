@@ -13,9 +13,10 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../store/useAuthStore';
 import { useRouteStore } from '../store/useRouteStore';
+import { useMonitoringStore } from '../store/useMonitoringStore';
 import { RootStackParamList, Route } from '../types';
-import { scheduleDepartureNotification } from '../utils/notifications';
 import { ensureServiceRunning } from '../utils/nativeService';
+import { fetchRoutes } from '../api/routeApi';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteList'>;
 
@@ -23,21 +24,24 @@ export default function RouteListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const user = useAuthStore(s => s.user);
   const { routes, loading, loadRoutes, removeRoute } = useRouteStore();
+  const isRouteActive = useMonitoringStore(s => s.isRouteActive);
 
   useFocusEffect(
     useCallback(() => {
-      if (user) loadRoutes(user.id);
-    }, [user]),
+      if (!user) return;
+      let cancelled = false;
+      fetchRoutes(user.id)
+        .then(data => { if (!cancelled) useRouteStore.setState({ routes: data }); })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }, [user.id]),
   );
 
   useEffect(() => {
-    routes.forEach(r => {
-      scheduleDepartureNotification(r.id, r.name, r.depart_time).catch(e => console.warn('[WAKE] 출발 알림 예약 실패:', e));
-    });
-    // 캐시된 모든 경로를 네이티브 서비스에 복원 (앱 재시작 후 자동 모니터링 재개)
-    if (routes.length > 0) {
-      ensureServiceRunning();
-    }
+    // 출발 알림은 "사전 도착알림 시작" 버튼을 눌렀을 때만 등록됨
+    // 렌더 사이클 완료 후 실행 — Fabric 렌더 중 네이티브 작업 충돌 방지
+    const timer = setTimeout(() => ensureServiceRunning(), 0);
+    return () => clearTimeout(timer);
   }, [routes]);
 
   const handleDelete = (route: Route) => {
@@ -86,24 +90,22 @@ export default function RouteListScreen({ navigation }: Props) {
                 </Text>
                 {item.segments.map((seg, i) => (
                   <Text key={i} style={styles.segText}>
-                    {i + 1}.{' '}
-                    {seg.mode === 'bus'
-                      ? `🚌 버스`
-                      : `🚇 ${seg.line_name}`}
-                    {' ('}
-                    {seg.start_stop_name ?? seg.start_station} →{' '}
-                    {seg.end_stop_name ?? seg.end_station}
-                    {')'}
+                    {i + 1}. 🚌 {seg.start_stop_name || '–'} → {seg.end_stop_name || '–'}
                   </Text>
                 ))}
               </TouchableOpacity>
               <View style={styles.cardActions}>
+                {isRouteActive(item.id) && (
+                  <View style={styles.activeBadge}>
+                    <Text style={styles.activeBadgeText}>🟢 작동중</Text>
+                  </View>
+                )}
                 <TouchableOpacity
                   style={styles.startBtn}
                   onPress={() =>
                     navigation.navigate('RouteActive', { routeId: item.id })
                   }>
-                  <Text style={styles.startBtnText}>시작</Text>
+                  <Text style={styles.startBtnText}>시작 ›</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.deleteBtn}
@@ -145,6 +147,17 @@ const styles = StyleSheet.create({
   routeMeta: { fontSize: 13, color: '#888', marginTop: 4, marginBottom: 8 },
   segText: { fontSize: 13, color: '#555', marginTop: 2 },
   cardActions: { flexDirection: 'row', gap: 8 },
+  activeBadge: {
+    height: 38,
+    paddingHorizontal: 12,
+    backgroundColor: '#E8F5E9',
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#A5D6A7',
+  },
+  activeBadgeText: { color: '#2E7D32', fontWeight: '700', fontSize: 13 },
   startBtn: {
     flex: 1,
     height: 38,

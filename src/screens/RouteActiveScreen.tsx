@@ -13,7 +13,7 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useRouteStore } from '../store/useRouteStore';
 import { useMonitoringStore } from '../store/useMonitoringStore';
 import { RootStackParamList, RouteSegment } from '../types';
-import { requestNotificationPermission } from '../utils/notifications';
+import { requestNotificationPermission, scheduleDepartureNotification } from '../utils/notifications';
 import {
   startRouteMonitoring,
   stopRouteMonitoring,
@@ -25,6 +25,7 @@ import {
 import { RestApi } from '../api/RestApi';
 import { useAuthStore } from '../store/useAuthStore';
 import { supabase } from '../api/supabaseClient';
+import { findKtxStation } from '../data/ktxStations';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RouteActive'>;
 
@@ -45,11 +46,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     if (!targetRoute) return;
     const lastSeg: RouteSegment =
       targetRoute.segments[targetRoute.segments.length - 1];
-    const name =
-      lastSeg.mode === 'bus'
-        ? lastSeg.end_stop_name ?? ''
-        : lastSeg.end_station ?? '';
-    setTargetName(name);
+    setTargetName(lastSeg.end_stop_name ?? '');
   }, [targetRoute?.id]);
 
   // ── 모니터링 시작 ────────────────────────────────────────────────
@@ -58,16 +55,14 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       console.log('[WAKE][ERROR] targetRoute 없음');
       return;
     }
+    // 기존 AlarmManager 알람 모두 초기화 후 재등록 (주말 오발동 방지)
+    cancelDeparture(routeId);
 
     console.log('[WAKE][ROUTE]', JSON.stringify(targetRoute, null, 2));
 
     const lastSeg: RouteSegment =
       targetRoute.segments[targetRoute.segments.length - 1];
-
-    const stopName =
-      lastSeg.mode === 'bus'
-        ? lastSeg.end_stop_name ?? ''
-        : lastSeg.end_station ?? '';
+    const stopName = lastSeg.end_stop_name ?? '';
 
     await requestNotificationPermission();
 
@@ -105,7 +100,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     // ── 첫 번째 버스 구간 (출발 알림용) ──────────────────────────
     const firstBusSeg = targetRoute.segments.find(s => s.mode === 'bus');
 
-    // ── Supabase에서 하차 지점 좌표 조회 ─────────────────────────
+    // ── Supabase에서 버스 정류장 좌표 조회 ───────────────────────
     const waypoints: Waypoint[] = [];
 
     const allSegs = targetRoute.segments
@@ -115,60 +110,54 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
     for (let i = 0; i < allSegs.length; i++) {
       const seg           = allSegs[i];
       const isDestination = i === allSegs.length - 1;
-      // 이 waypoint를 지난 후 탑승할 다음 구간 정보
       const nextSeg       = allSegs[i + 1];
-      const nextMode      = isDestination ? undefined : (nextSeg?.mode as 'bus' | 'subway' | undefined);
-      const nextStopId    = nextMode === 'bus' ? (nextSeg?.start_stop_id ?? undefined) : undefined;
-      const nextStopName  = nextMode === 'bus' ? (nextSeg?.start_stop_name ?? undefined) : undefined;
+      const nextMode      = isDestination ? undefined : nextSeg?.mode;
+      const nextStopId    = nextSeg?.start_stop_id ?? undefined;
+      const nextStopName  = nextSeg?.start_stop_name ?? undefined;
 
-      if (seg.mode === 'bus' && seg.end_stop_name && seg.end_stop_id) {
+      if (seg.end_stop_name && seg.end_stop_id) {
         const name   = seg.end_stop_name;
         const nodeId = seg.end_stop_id;
-        try {
-          const { data } = await supabase
-            .from('bus_stops')
-            .select('lat, lng')
-            .eq('node_id', nodeId)
-            .maybeSingle();
 
-          if (data) {
+        if (seg.mode === 'ktx') {
+          // KTX 역: 로컬 데이터에서 좌표 조회 (Supabase 불필요)
+          const station = findKtxStation(nodeId);
+          if (station) {
             waypoints.push({
-              id: `wp_${i}`, lat: data.lat, lng: data.lng, name,
+              id: `wp_${i}`, lat: station.lat, lng: station.lng, name: `${name}역`,
               type: isDestination ? 'destination' : 'transfer',
               ...(nextMode     && { nextMode }),
               ...(nextStopId   && { nextStopId }),
               ...(nextStopName && { nextStopName }),
             });
-            console.log('[WAKE][WAYPOINT] 버스', name, nodeId, data.lat, data.lng, '→ next:', nextMode, nextStopId);
+            console.log('[WAKE][WAYPOINT] KTX', name, station.lat, station.lng, '→ next:', nextMode);
           } else {
-            console.warn('[WAKE][WARN] bus_stops 미발견 node_id:', nodeId, name);
+            console.warn('[WAKE][WARN] KTX 역 미발견:', nodeId);
           }
-        } catch (e) {
-          console.warn('[WAKE][ERROR] bus_stops 조회 실패:', e);
-        }
-      } else if (seg.mode === 'subway' && seg.end_station) {
-        const name      = seg.end_station;
-        const stationId = seg.end_station_id;
-        try {
-          const query = supabase.from('subway_stations').select('lat, lng');
-          const { data } = stationId
-            ? await query.eq('station_id', stationId).maybeSingle()
-            : await query.ilike('station_name', `%${name}%`).limit(1).maybeSingle();
+        } else {
+          // 버스 정류장: Supabase에서 좌표 조회
+          try {
+            const { data } = await supabase
+              .from('bus_stops')
+              .select('lat, lng')
+              .eq('node_id', nodeId)
+              .maybeSingle();
 
-          if (data) {
-            waypoints.push({
-              id: `wp_${i}`, lat: data.lat, lng: data.lng, name,
-              type: isDestination ? 'destination' : 'transfer',
-              ...(nextMode     && { nextMode }),
-              ...(nextStopId   && { nextStopId }),
-              ...(nextStopName && { nextStopName }),
-            });
-            console.log('[WAKE][WAYPOINT] 지하철', name, stationId ?? '(이름검색)', data.lat, data.lng, '→ next:', nextMode, nextStopId);
-          } else {
-            console.warn('[WAKE][WARN] subway_stations 미발견:', stationId ?? name);
+            if (data) {
+              waypoints.push({
+                id: `wp_${i}`, lat: data.lat, lng: data.lng, name,
+                type: isDestination ? 'destination' : 'transfer',
+                ...(nextMode     && { nextMode }),
+                ...(nextStopId   && { nextStopId }),
+                ...(nextStopName && { nextStopName }),
+              });
+              console.log('[WAKE][WAYPOINT] 버스', name, nodeId, data.lat, data.lng, '→ next:', nextMode);
+            } else {
+              console.warn('[WAKE][WARN] bus_stops 미발견 node_id:', nodeId, name);
+            }
+          } catch (e) {
+            console.warn('[WAKE][ERROR] bus_stops 조회 실패:', e);
           }
-        } catch (e) {
-          console.warn('[WAKE][ERROR] subway_stations 조회 실패:', e);
         }
       }
     }
@@ -198,40 +187,41 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         targetRoute.final_dest_lat, targetRoute.final_dest_lng);
     }
 
-    // ── 다중 경로 모니터링 시작 ───────────────────────────────────
-    // startStopId/startStopName은 첫 구간이 버스일 때만 저장
-    // (지하철 시작 경로에 저장하면 워치독이 잘못된 출발 알람을 등록함)
+    // ── 모니터링 시작 ─────────────────────────────────────────────
     const firstSeg = allSegs[0];
-    const busStartStopId   = firstSeg?.mode === 'bus' ? firstSeg.start_stop_id   ?? undefined : undefined;
-    const busStartStopName = firstSeg?.mode === 'bus' ? firstSeg.start_stop_name ?? undefined : undefined;
-
     startRouteMonitoring({
       routeId,
+      routeName:     targetRoute.name,
       waypoints,
       departTime:    targetRoute.depart_time,
-      startStopId:   busStartStopId,
-      startStopName: busStartStopName,
+      startStopId:   firstSeg?.start_stop_id   ?? undefined,
+      startStopName: firstSeg?.start_stop_name ?? undefined,
+      daysOfWeek:    targetRoute.days_of_week,
     });
 
-    // ── 출발 시간 알림 예약 ───────────────────────────────────────
-    // 첫 번째 구간이 버스인 경우에만 예약
-    // (지하철로 시작하는 경우 환승 지오펜스에서 버스 정보 제공)
-    if (firstSeg?.mode === 'bus' && firstSeg.start_stop_id) {
+    // ── 출발 시간 알림 예약 (운행 요일 반영) ──────────────────────
+    if (firstSeg?.start_stop_id) {
       scheduleDeparture(
         routeId,
         targetRoute.depart_time,
         firstSeg.start_stop_name ?? '',
         firstSeg.start_stop_id,
       );
-    } else {
-      console.log('[WAKE] 첫 구간이 버스가 아님(mode=%s) → 출발 알람 미예약', firstSeg?.mode);
     }
+    scheduleDepartureNotification(
+      routeId,
+      targetRoute.name,
+      targetRoute.depart_time,
+      targetRoute.days_of_week,
+    ).catch(e => console.warn('[WAKE] 출발 알림 예약 실패:', e));
   };
 
   // ── 모니터링 중단 ────────────────────────────────────────────────
   const stopMonitoring = () => {
+    // AlarmManager 알람 취소 → 서비스 중지 → 재시작 방지
     cancelDeparture(routeId);
     stopRouteMonitoring(routeId);
+    console.log('[WAKE] 모니터링 중단: AlarmManager 취소 + 서비스 정지');
   };
 
   // ── 경로 없음 ────────────────────────────────────────────────────
@@ -252,7 +242,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         <View style={styles.card}>
           <Text style={styles.routeName}>{targetRoute.name}</Text>
           <Text style={styles.dest}>목적지 {targetName || '–'}</Text>
-          <Text style={styles.statusText}>🟢 모니터링 중</Text>
+          <Text style={styles.statusText}>🟢 경로 안내 작동중</Text>
 
           {activeItem?.departTime ? (
             <Text style={styles.departBadge}>
@@ -290,21 +280,15 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
         <Text style={styles.segmentTitle}>구간 정보</Text>
         {targetRoute.segments.map((seg, i) => (
           <View key={i} style={styles.segmentRow}>
-            <Text style={styles.segmentBadge}>
-              {seg.mode === 'bus' ? '🚌' : '🚇'}
-            </Text>
+            <Text style={styles.segmentBadge}>{seg.mode === 'ktx' ? '🚄' : '🚌'}</Text>
             <View style={{ flex: 1 }}>
-              {seg.mode === 'bus' ? (
-                <Text style={styles.segmentSub}>
-                  {seg.start_stop_name || '–'} → {seg.end_stop_name || '–'}
-                </Text>
-              ) : (
-                <>
-                  <Text style={styles.segmentMain}>{seg.line_name ?? ''}</Text>
-                  <Text style={styles.segmentSub}>
-                    {seg.start_station || '–'} → {seg.end_station || '–'}
-                  </Text>
-                </>
+              <Text style={styles.segmentSub}>
+                {seg.mode === 'ktx'
+                  ? `${seg.start_stop_name || '–'}역 → ${seg.end_stop_name || '–'}역`
+                  : `${seg.start_stop_name || '–'} → ${seg.end_stop_name || '–'}`}
+              </Text>
+              {seg.mode === 'ktx' && (
+                <Text style={{ fontSize: 11, color: '#6B46C1', marginTop: 2 }}>KTX</Text>
               )}
             </View>
           </View>
@@ -312,7 +296,7 @@ export default function RouteActiveScreen({ route, navigation }: Props) {
       </View>
 
       <TouchableOpacity style={styles.startBtn} onPress={startMonitoring}>
-        <Text style={styles.startBtnText}>알림 시작</Text>
+        <Text style={styles.startBtnText}>사전 도착알림 시작</Text>
       </TouchableOpacity>
 
       <TouchableOpacity

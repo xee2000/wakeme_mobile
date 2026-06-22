@@ -3,6 +3,7 @@
     package="com.wakeme_mobile">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -30,6 +31,20 @@
       <meta-data
         android:name="com.kakao.sdk.AppKey"
         android:value="b04b17eeb689cfd9d2a18871748bff94" />
+
+      <!-- Meta Facebook SDK (앱 설치 광고 추적) -->
+      <meta-data
+        android:name="com.facebook.sdk.ApplicationId"
+        android:value="2426672671092648" />
+      <meta-data
+        android:name="com.facebook.sdk.ClientToken"
+        android:value="97aeec85fdd6dc65fb9b670d7849e30d" />
+      <meta-data
+        android:name="com.facebook.sdk.AutoLogAppEventsEnabled"
+        android:value="true" />
+      <meta-data
+        android:name="com.facebook.sdk.AdvertiserIDCollectionEnabled"
+        android:value="true" />
 
 
       <!-- 카카오 로그인 리다이렉트 Activity -->
@@ -86,6 +101,11 @@
         <!-- 시간창 시작 알람: departTime - 10분에 GPS 폴링 자동 시작 -->
         <receiver
             android:name="com.wakeme_mobile.WakeMeWindowStartReceiver"
+            android:exported="false" />
+
+        <!-- 하차 알림 수신 확인: Yes/No 액션 응답 + 무응답 에스컬레이션 -->
+        <receiver
+            android:name="com.wakeme_mobile.WakeMeAlertAckReceiver"
             android:exported="false" />
 
     </application>

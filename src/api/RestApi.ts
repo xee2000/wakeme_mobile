@@ -19,9 +19,7 @@ const SERVER_IP = '192.168.219.104';
 const SERVER_PORT = 3000;
 // ────────────────────────────────────────────────────────────────
 
-const BASE_URL =
-  process.env.SERVER_URL ??
-  'https://wakeme-api.fly.dev';
+const BASE_URL = 'https://wakeme-api.fly.dev';
 
 // ── 공통 헤더 ──────────────────────────────────────────────────
 function headers(extra?: Record<string, string>): Record<string, string> {

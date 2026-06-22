@@ -39,7 +39,7 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
             departMap.values.any { dt -> dt.isNotBlank() && WakeMeGeofenceReceiver.isWithinServiceWindow(dt) }
         }
 
-        // GPS 상태 + userId (heartbeat는 시간창과 무관하게 항상 전송)
+        // GPS 상태 + userId (heartbeat는 시간창 안에서만 전송)
         val lm          = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val gpsEnabled  = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
         val userId      = prefs.getString(WakeMeServiceModule.KEY_USER_ID, "unknown") ?: "unknown"
@@ -54,30 +54,33 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
             } else {
                 context.startService(serviceIntent)
             }
+
+            // heartbeat 전송 (시간창 안에서만)
+            val result = goAsync()
+            Thread {
+                try {
+                    sendHeartbeat(routeIds, userId, departTimes, gpsEnabled)
+                } catch (e: Exception) {
+                    android.util.Log.w("WAKE_WD", "heartbeat 전송 실패: ${e.message}")
+                } finally {
+                    result.finish()
+                }
+            }.start()
+
+            // ── 출발 알람 재등록 (버스 첫 구간 경로: departTime에 버스 도착 알림) ──
+            rescheduleDepartureAlarms(context, allRoutesJson)
+
+            // ── 시간창 시작 알람 재등록 (모든 경로: departTime에 GPS 폴링 시작) ──
+            WakeMeWindowStartReceiver.scheduleAll(context, allRoutesJson)
+
+            // ── 다음 알람 자가 체인 예약 ──
+            scheduleNext(context)
         } else {
-            android.util.Log.i("WAKE_WD", "모든 경로 시간창 밖 → 서비스 재시작 스킵 (heartbeat는 전송)")
+            // 모든 시간창 종료 → 워치독 체인 중단 (다음 날 WakeMeWindowStartReceiver가 재시작)
+            android.util.Log.i("WAKE_WD", "모든 경로 시간창 종료 → 워치독 체인 종료 (다음 알람 미예약)")
+            // 내일을 위해 시간창 시작 알람만 재등록 (워치독은 WindowStart 시점에 다시 등록)
+            WakeMeWindowStartReceiver.scheduleAll(context, allRoutesJson)
         }
-
-        // heartbeat 항상 전송 (앱 생존 확인 목적)
-        val result = goAsync()
-        Thread {
-            try {
-                sendHeartbeat(routeIds, userId, departTimes, gpsEnabled)
-            } catch (e: Exception) {
-                android.util.Log.w("WAKE_WD", "heartbeat 전송 실패: ${e.message}")
-            } finally {
-                result.finish()
-            }
-        }.start()
-
-        // ── 출발 알람 재등록 (버스 첫 구간 경로: departTime에 버스 도착 알림) ──
-        rescheduleDepartureAlarms(context, allRoutesJson)
-
-        // ── 시간창 시작 알람 재등록 (모든 경로: departTime - 10분에 GPS 폴링 시작) ──
-        WakeMeWindowStartReceiver.scheduleAll(context, allRoutesJson)
-
-        // ── 다음 알람 자가 체인 예약 (항상 재예약, 경로가 살아있는 한) ──
-        scheduleNext(context)
     }
 
     companion object {
@@ -162,85 +165,7 @@ class WakeMeWatchdogReceiver : BroadcastReceiver() {
          * FLAG_UPDATE_CURRENT로 이미 등록된 알람은 조용히 덮어씀.
          */
         private fun rescheduleDepartureAlarms(context: Context, allRoutesJson: String) {
-            try {
-                val routes = org.json.JSONArray(allRoutesJson)
-                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                val now = System.currentTimeMillis()
-
-                for (i in 0 until routes.length()) {
-                    val r          = routes.getJSONObject(i)
-                    val routeId    = r.optString("routeId")
-                    val departTime = r.optString("departTime")
-                    val startStopId   = r.optString("startStopId")
-                    val startStopName = r.optString("startStopName")
-
-                    if (routeId.isEmpty() || departTime.isEmpty() || startStopId.isEmpty()) continue
-
-                    val parts = departTime.split(":")
-                    if (parts.size != 2) continue
-                    val hour = parts[0].toIntOrNull() ?: continue
-                    val min  = parts[1].toIntOrNull() ?: continue
-
-                    val departAt = java.util.Calendar.getInstance().apply {
-                        set(java.util.Calendar.HOUR_OF_DAY, hour)
-                        set(java.util.Calendar.MINUTE, min)
-                        set(java.util.Calendar.SECOND, 0)
-                        set(java.util.Calendar.MILLISECOND, 0)
-                    }
-
-                    // 오늘 출발 시각이 이미 지났으면 내일로
-                    var msUntil = departAt.timeInMillis - now
-                    if (msUntil < 0) {
-                        departAt.add(java.util.Calendar.DAY_OF_MONTH, 1)
-                        msUntil = departAt.timeInMillis - now
-                    }
-
-                    // 24시간 이내인 경우만 등록
-                    if (msUntil > 24 * 60 * 60 * 1000L) {
-                        android.util.Log.d("WAKE_WD", "출발 알람 스킵 (24h 초과): $routeId departTime=$departTime")
-                        continue
-                    }
-
-                    fun makePi(reqCode: Int, title: String): PendingIntent {
-                        val intent = Intent(context, WakeMeDepartureReceiver::class.java).apply {
-                            putExtra(WakeMeDepartureReceiver.EXTRA_TITLE,     title)
-                            putExtra(WakeMeDepartureReceiver.EXTRA_NOTIF_ID,  reqCode)
-                            putExtra(WakeMeDepartureReceiver.EXTRA_STOP_NAME, startStopName)
-                            putExtra(WakeMeDepartureReceiver.EXTRA_STOP_ID,   startStopId)
-                        }
-                        return PendingIntent.getBroadcast(
-                            context, reqCode, intent,
-                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                        )
-                    }
-
-                    fun scheduleExact(triggerMs: Long, pi: PendingIntent) {
-                        try {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
-                            } else {
-                                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerMs, pi)
-                            }
-                        } catch (e: SecurityException) {
-                            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
-                        }
-                    }
-
-                    val title   = "🚌 $startStopName — 버스 시간 안내"
-                    val id5min  = ("$routeId-5min").hashCode()
-                    val idNow   = ("$routeId-now").hashCode()
-                    val ms5min  = msUntil - 5 * 60 * 1000L
-
-                    if (ms5min > 0) {
-                        scheduleExact(now + ms5min, makePi(id5min, title))
-                    }
-                    scheduleExact(now + msUntil, makePi(idNow, title))
-
-                    android.util.Log.i("WAKE_WD", "출발 알람 갱신: $routeId $departTime → ${msUntil / 60000}분 후")
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("WAKE_WD", "출발 알람 재등록 실패: ${e.message}")
-            }
+            // 버스 시간 안내 알림 제거됨 — no-op
         }
     }
 }

@@ -10,12 +10,22 @@ const ROUTES_KEY = 'wakeme_active_routes';
 const CACHE_KEY  = 'wakeme_route_cache';
 
 // ── 활성 경로 한 건 ────────────────────────────────────────────────
+export interface RoutePathPoint {
+  lat: number;
+  lng: number;
+}
+
 export interface ActiveRouteItem {
   routeId:      string;
+  routeName?:   string;
   waypoints:    Waypoint[];
   departTime:   string;
   startStopId?: string;
   startStopName?: string;
+  /** 이동경로 좌표 배열 (지하철 중간역 포함) — DR 경로 추종에 사용 */
+  routePath?:   RoutePathPoint[];
+  /** 운행 요일 (0=일,1=월,...,6=토). 없으면 매일 */
+  daysOfWeek?:  number[];
 }
 
 // ── MMKV 직렬화 ───────────────────────────────────────────────────

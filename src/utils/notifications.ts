@@ -64,61 +64,45 @@ export async function sendExitNotification(stopName: string): Promise<void> {
   });
 }
 
-/** 버스 도착 정보 알림 (출발 시간에 자동 발송) */
-export async function sendBusArrivalNotification(
-  busNo: string,
-  arrivalMin: number | null,
-  stopName: string,
-): Promise<void> {
-  const title = arrivalMin !== null
-    ? `🚌 ${busNo}번 버스 ${arrivalMin}분 후 도착`
-    : `🚌 ${busNo}번 버스 도착 정보`;
-  const body = arrivalMin !== null
-    ? `${stopName} 정류장에서 탑승 준비하세요`
-    : `${stopName} 정류장 — 도착 정보를 확인하세요`;
-
-  await notifee.displayNotification({
-    title,
-    body,
-    android: {
-      channelId: CHANNEL_ALERT,
-      importance: AndroidImportance.HIGH,
-      pressAction: { id: 'default' },
-      vibrationPattern: [100, 300, 200, 300],
-    },
-    ios: {
-      sound: 'default',
-    },
-  });
-}
-
 /** 알림 권한 요청 */
 export async function requestNotificationPermission(): Promise<boolean> {
   const settings = await notifee.requestPermission();
   return settings.android?.alarm === AndroidNotificationSetting.ENABLED;
 }
 
-/** 출발 시간 트리거 알림 예약 (매일 반복) */
+/**
+ * 출발 시간 알림 예약 — 다음 유효한 운행 요일에만 1회 예약
+ * 앱 시작 시 rescheduleDepartureAlarms() 에서 매번 재등록되므로 DAILY repeat 불필요
+ */
 export async function scheduleDepartureNotification(
   routeId: string,
   routeName: string,
-  departTime: string, // "HH:MM"
+  departTime: string,   // "HH:MM"
+  daysOfWeek?: number[], // 0=일,1=월,...,6=토. 미지정이면 매일
 ): Promise<void> {
   await setupNotificationChannel();
   const [hour, minute] = departTime.split(':').map(Number);
+  const validDays = daysOfWeek && daysOfWeek.length > 0 ? daysOfWeek : [0, 1, 2, 3, 4, 5, 6];
 
+  // 오늘부터 최대 7일 내 다음 유효한 운행일 탐색
   const now = new Date();
-  const trigger = new Date();
-  trigger.setHours(hour, minute, 0, 0);
-  if (trigger.getTime() <= now.getTime()) {
-    trigger.setDate(trigger.getDate() + 1);
+  let trigger: Date | null = null;
+  for (let d = 0; d <= 7; d++) {
+    const candidate = new Date();
+    candidate.setDate(now.getDate() + d);
+    candidate.setHours(hour, minute, 0, 0);
+    if (candidate.getTime() > now.getTime() && validDays.includes(candidate.getDay())) {
+      trigger = candidate;
+      break;
+    }
   }
+  if (!trigger) return; // 유효한 운행일 없음 — 알림 등록 안 함
 
   await notifee.createTriggerNotification(
     {
       id: `departure-${routeId}`,
       title: '🚌 출발 시간입니다!',
-      body: `${routeName} — 앱을 열어 버스 도착 정보를 확인하세요`,
+      body: `${routeName} — 앱을 열어 출발을 준비하세요`,
       android: {
         channelId: CHANNEL_ALERT,
         importance: AndroidImportance.HIGH,
@@ -129,7 +113,6 @@ export async function scheduleDepartureNotification(
     {
       type: TriggerType.TIMESTAMP,
       timestamp: trigger.getTime(),
-      repeatFrequency: RepeatFrequency.DAILY,
       alarmManager: { allowWhileIdle: true },
     },
   );

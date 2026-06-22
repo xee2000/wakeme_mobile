@@ -133,12 +133,17 @@ CREATE POLICY "users: anon full access"
 
 -- ── routes ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.routes (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id     TEXT        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  name        TEXT        NOT NULL,
-  depart_time TEXT        NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      TEXT        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  name         TEXT        NOT NULL,
+  depart_time  TEXT        NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  days_of_week INT[]       NOT NULL DEFAULT '{0,1,2,3,4,5,6}'  -- 0=일..6=토, 없으면 매일
 );
+
+-- 기존 테이블에 days_of_week 컬럼이 없으면 추가 (멱등성)
+ALTER TABLE public.routes
+  ADD COLUMN IF NOT EXISTS days_of_week INT[] NOT NULL DEFAULT '{0,1,2,3,4,5,6}';
 
 ALTER TABLE public.routes ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "routes: owner only" ON public.routes;
@@ -162,12 +167,61 @@ CREATE TABLE IF NOT EXISTS public.route_segments (
 
   -- 지하철 필드
   line_name       TEXT,
+  subway_city     TEXT,          -- 도시 (예: "대전", "서울") — 수정 시 도시 탭 복원용
   start_station   TEXT,
-  end_station     TEXT
+  start_station_id TEXT,
+  end_station     TEXT,
+  end_station_id   TEXT
 );
+
+-- 기존 테이블에 subway_city, start_station_id, end_station_id 컬럼이 없으면 추가 (멱등성)
+ALTER TABLE public.route_segments
+  ADD COLUMN IF NOT EXISTS subway_city      TEXT,
+  ADD COLUMN IF NOT EXISTS start_station_id TEXT,
+  ADD COLUMN IF NOT EXISTS end_station_id   TEXT;
 
 ALTER TABLE public.route_segments ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "route_segments: via route owner" ON public.route_segments;
 CREATE POLICY "route_segments: anon full access"
   ON public.route_segments FOR ALL
+  USING (true) WITH CHECK (true);
+
+-- ── station_predictions (역 예측 디버깅 로그) ──────────────────────────────
+CREATE TABLE IF NOT EXISTS public.station_predictions (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id         TEXT,
+  predicted_name  TEXT        NOT NULL,   -- 앱이 예측한 역 이름
+  predicted_lat   FLOAT8,                 -- drRoutePath 기준 예측 역 좌표
+  predicted_lng   FLOAT8,
+  dr_lat          FLOAT8,                 -- DR 추정 현재 위치
+  dr_lng          FLOAT8,
+  gps_lat         FLOAT8,                 -- 실제 GPS (있을 때만)
+  gps_lng         FLOAT8,
+  confirmed       BOOLEAN,                -- true=맞아요, false=아니요
+  cache_age_s     INT                     -- GPS 캐시 나이 (DR 공백 시간)
+);
+
+ALTER TABLE public.station_predictions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "station_predictions: anon full access" ON public.station_predictions;
+CREATE POLICY "station_predictions: anon full access"
+  ON public.station_predictions FOR ALL
+  USING (true) WITH CHECK (true);
+
+-- ── alert_acks (하차알림 수신확인 응답 로그) ────────────────────────────────
+-- WakeMeAlertAckReceiver.kt: sendDestinationAlert() 직후 "정상적으로 받으셨나요?"
+-- 확인 알림에 대한 사용자 응답(yes/no) 또는 60초 무응답 에스컬레이션(timeout) 기록.
+-- 백엔드: POST /api/notify/alert-ack (src/routes/notify.ts)
+CREATE TABLE IF NOT EXISTS public.alert_acks (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id         TEXT        NOT NULL,
+  waypoint_name   TEXT        NOT NULL,
+  result          TEXT        NOT NULL CHECK (result IN ('yes', 'no', 'timeout'))
+);
+
+ALTER TABLE public.alert_acks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "alert_acks: anon full access" ON public.alert_acks;
+CREATE POLICY "alert_acks: anon full access"
+  ON public.alert_acks FOR ALL
   USING (true) WITH CHECK (true);

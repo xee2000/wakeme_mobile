@@ -14,10 +14,11 @@ function mapStop(item: any): BusStop {
 // 서버 정적 데이터 매핑 (stops.json)
 function mapLocalStop(item: any): BusStop & { distance?: number } {
   return {
-    nodeId: item.id ?? '',
+    nodeId:   item.id ?? '',
     nodeName: item.name ?? '',
-    gpslati: item.lat ?? 0,
-    gpslong: item.lng ?? 0,
+    gpslati:  item.lat ?? 0,
+    gpslong:  item.lng ?? 0,
+    city:     item.city ?? undefined,
     distance: item.distance,
   };
 }
@@ -44,13 +45,28 @@ export async function searchStops(name: string): Promise<BusStop[]> {
   }
 }
 
-/** GPS 좌표로 근처 정류장 조회 (서버 정적 데이터 + 거리 계산) */
-export async function fetchNearbyStops(lat: number, lng: number): Promise<BusStop[]> {
+/** GPS 좌표로 근처 정류장 조회 */
+export async function fetchNearbyStops(lat: number, lng: number, radius = 500): Promise<BusStop[]> {
   try {
-    const items = await RestApi.get<any[]>(`/api/stops/nearby?lat=${lat}&lng=${lng}`);
+    const items = await RestApi.get<any[]>(`/api/stops/nearby?lat=${lat}&lng=${lng}&radius=${radius}`);
     return items.map(mapLocalStop);
   } catch (err) {
     console.error('[WAKE] fetchNearbyStops error:', err);
+    return [];
+  }
+}
+
+/** Bounding box 내 정류장 조회 (전국 타일 로딩용) */
+export async function fetchStopsByBbox(
+  latMin: number, latMax: number, lngMin: number, lngMax: number,
+): Promise<BusStop[]> {
+  try {
+    const items = await RestApi.get<any[]>(
+      `/api/stops/bbox?latMin=${latMin}&latMax=${latMax}&lngMin=${lngMin}&lngMax=${lngMax}`,
+    );
+    return items.map(mapLocalStop);
+  } catch (err) {
+    console.error('[WAKE] fetchStopsByBbox error:', err);
     return [];
   }
 }
@@ -98,6 +114,8 @@ export interface SubwayStation {
   name: string;
   fullName: string;
   color: string;
+  lat: number;
+  lng: number;
 }
 
 export async function fetchSubwayStations(line?: string, city?: string): Promise<SubwayStation[]> {

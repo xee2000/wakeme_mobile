@@ -1,5 +1,11 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Platform,
+} from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation';
 import { RestApi } from './src/api/RestApi';
@@ -8,8 +14,8 @@ import {
   AndroidStartUpdateOptions,
   IAUUpdateKind,
   StatusUpdateEvent,
-  AndroidInstallStatus,
 } from 'sp-react-native-in-app-updates';
+import DeviceInfo from 'react-native-device-info';
 
 // ── In-App Update 훅 ──────────────────────────────────────────────
 const inAppUpdates = new InAppUpdates(false);
@@ -29,7 +35,9 @@ function useInAppUpdate() {
         };
 
         inAppUpdates.addStatusUpdateListener((event: StatusUpdateEvent) => {
-          if (event.status === AndroidInstallStatus.DOWNLOADED) {
+          // IAUInstallStatus.DOWNLOADED = 11 (AndroidInstallStatus는 패키지에서 직접 export 안 됨)
+          if (event.status === 11) {
+            // IAUInstallStatus.DOWNLOADED = 11
             // 다운로드 완료 → 재시작 시 자동 설치
             inAppUpdates.installUpdate();
             inAppUpdates.removeStatusUpdateListener(() => {});
@@ -70,10 +78,13 @@ class ErrorBoundary extends React.Component<
       body: JSON.stringify({
         timestamp: new Date().toISOString(),
         message: error.message,
-        stack: `${error.stack ?? ''}\n\nComponent Stack:\n${info.componentStack ?? ''}`,
+        stack: `${error.stack ?? ''}\n\nComponent Stack:\n${
+          info.componentStack ?? ''
+        }`,
         isFatal: false,
         platform: Platform.OS,
         platformVersion: Platform.Version,
+        appVersion: DeviceInfo.getVersion(),
         monitoringRouteId: null,
         source: 'ErrorBoundary',
       }),
@@ -88,7 +99,8 @@ class ErrorBoundary extends React.Component<
           <Text style={styles.errorMessage}>{this.state.errorMessage}</Text>
           <TouchableOpacity
             style={styles.retryBtn}
-            onPress={() => this.setState({ hasError: false, errorMessage: '' })}>
+            onPress={() => this.setState({ hasError: false, errorMessage: '' })}
+          >
             <Text style={styles.retryText}>다시 시도</Text>
           </TouchableOpacity>
         </View>
@@ -119,8 +131,18 @@ const styles = StyleSheet.create({
     padding: 32,
     backgroundColor: '#F5F7FA',
   },
-  errorTitle: { fontSize: 20, fontWeight: '700', color: '#E53935', marginBottom: 12 },
-  errorMessage: { fontSize: 13, color: '#666', textAlign: 'center', marginBottom: 32 },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#E53935',
+    marginBottom: 12,
+  },
+  errorMessage: {
+    fontSize: 13,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 32,
+  },
   retryBtn: {
     height: 48,
     paddingHorizontal: 32,
